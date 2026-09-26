@@ -17,7 +17,12 @@ from telegram_ai.storage import SQLiteRepository
 
 settings = Settings.from_environment()
 repository = SQLiteRepository(settings.database_path)
-ai = GeminiClient(settings.gemini_api_key, settings.gemini_model, settings.request_timeout_seconds)
+ai = GeminiClient(
+    settings.gemini_api_key,
+    settings.gemini_model,
+    settings.gemini_image_model,
+    settings.request_timeout_seconds,
+)
 handlers = TelegramAIHandlers(repository, ai, settings.max_context_messages)
 telegram_application = Application.builder().token(settings.telegram_bot_token).build()
 register_handlers(telegram_application, handlers)

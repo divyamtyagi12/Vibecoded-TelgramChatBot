@@ -14,6 +14,7 @@ class Settings:
     telegram_bot_token: str
     gemini_api_key: str
     gemini_model: str
+    gemini_image_model: str
     telegram_webhook_secret: str
     database_path: Path
     max_context_messages: int
@@ -53,6 +54,7 @@ class Settings:
             telegram_bot_token=token,
             gemini_api_key=api_key,
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            gemini_image_model=os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image").strip(),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,

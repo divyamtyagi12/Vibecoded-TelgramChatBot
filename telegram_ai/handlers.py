@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from io import BytesIO
 
 from telegram import BotCommand, Update
@@ -158,7 +159,12 @@ class TelegramAIHandlers:
         if not should_reply(settings, is_mentioned=is_mentioned, is_reply_to_bot=is_reply_to_bot):
             return
 
-        image_prompt = self._image_prompt(message.text, bot.username)
+        prompt = self._request_text(message.text, bot.username)
+        if not prompt:
+            await message.reply_text("What would you like help with?")
+            return
+
+        image_prompt = self._image_prompt(prompt)
         if image_prompt:
             await self._send_image(message, context, image_prompt)
             return
@@ -166,14 +172,14 @@ class TelegramAIHandlers:
         if settings.memory_enabled:
             self.repository.add_context(
                 update.effective_chat.id,
-                ConversationMessage(message.from_user.full_name, message.text),
+                ConversationMessage(message.from_user.full_name, prompt),
             )
             recent = self.repository.get_context(update.effective_chat.id, self.max_context)
         else:
             recent = []
         await context.bot.send_chat_action(update.effective_chat.id, "typing")
         try:
-            reply = await self.ai.answer(message.text, settings, recent)
+            reply = await self.ai.answer(prompt, settings, recent)
         except RuntimeError:
             logger.exception("AI response failed for chat %s", update.effective_chat.id)
             await message.reply_text("I couldn't reach the AI service just now. Please try again shortly.")
@@ -197,10 +203,20 @@ class TelegramAIHandlers:
         await message.reply_photo(image_file, caption="Generated image")
 
     @staticmethod
-    def _image_prompt(text: str, bot_username: str | None = None) -> str | None:
+    def _request_text(text: str, bot_username: str | None = None) -> str:
+        """Remove the Telegram routing mention before sending the request to Gemini."""
         normalized = text.strip()
-        if bot_username and normalized.lower().startswith(f"@{bot_username.lower()}"):
-            normalized = normalized[len(bot_username) + 1 :].lstrip(" ,:-")
+        if not bot_username:
+            return normalized
+        mention = re.escape(f"@{bot_username}")
+        without_mentions = re.sub(
+            rf"(?<!\w){mention}\b", "", normalized, flags=re.IGNORECASE
+        )
+        return re.sub(r"\s+([,.:;!?])", r"\1", without_mentions).strip(" ,:-")
+
+    @staticmethod
+    def _image_prompt(text: str) -> str | None:
+        normalized = text.strip()
         for prefix in (
             "generate an image of ",
             "generate an image ",

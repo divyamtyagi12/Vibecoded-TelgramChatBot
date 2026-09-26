@@ -11,7 +11,7 @@ from telegram.constants import ChatMemberStatus
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_ai.domain import ConversationMessage, GroupSettings, ParticipationMode, should_reply
-from telegram_ai.gemini import GeminiClient
+from telegram_ai.gemini import GeminiClient, ImageGenerationError
 from telegram_ai.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -194,9 +194,22 @@ class TelegramAIHandlers:
         await context.bot.send_chat_action(message.chat_id, "upload_photo")
         try:
             image_data, mime_type = await self.ai.generate_image(prompt)
-        except RuntimeError:
-            logger.exception("Image generation failed for chat %s", message.chat_id)
-            await message.reply_text("I couldn't generate that image just now. Please try again shortly.")
+        except ImageGenerationError as error:
+            logger.warning(
+                "Image generation failed for chat %s: category=%s",
+                message.chat_id,
+                error.kind,
+            )
+            responses = {
+                "authentication": "Image generation is not configured correctly yet. Please try again later.",
+                "access": "Image generation is not enabled for this bot right now. Please try again later.",
+                "model": "The configured image model is unavailable right now. Please try again later.",
+                "rate_limited": "The image generator is busy right now. Please try again shortly.",
+                "timeout": "Image generation took too long. Please try again shortly.",
+            }
+            await message.reply_text(
+                responses.get(error.kind, "I couldn't generate that image just now. Please try again shortly.")
+            )
             return
         image_file = BytesIO(image_data)
         image_file.name = "generated." + mime_type.split("/", 1)[1]

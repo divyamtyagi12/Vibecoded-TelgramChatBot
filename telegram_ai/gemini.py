@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import base64
+import logging
 
 import httpx
 
 from telegram_ai.domain import ConversationMessage, GroupSettings
+
+logger = logging.getLogger(__name__)
+
+
+class ImageGenerationError(RuntimeError):
+    """A safe, user-facing category for a failed image-generation request."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__("The image generator is temporarily unavailable.")
+        self.kind = kind
 
 
 class GeminiClient:
@@ -80,7 +91,7 @@ class GeminiClient:
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"responseModalities": ["IMAGE"]},
         }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.image_model}:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1/models/{self.image_model}:generateContent"
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds * 4) as client:
                 response = await client.post(
@@ -94,5 +105,26 @@ class GeminiClient:
             if not image_data or not mime_type.startswith("image/"):
                 raise ValueError("Gemini returned an invalid image")
             return image_data, mime_type
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
-            raise RuntimeError("The image generator is temporarily unavailable.") from error
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code
+            kind = {
+                401: "authentication",
+                403: "access",
+                404: "model",
+                429: "rate_limited",
+            }.get(status_code, "provider")
+            logger.warning(
+                "Gemini image generation failed: status=%s category=%s",
+                status_code,
+                kind,
+            )
+            raise ImageGenerationError(kind) from error
+        except httpx.TimeoutException as error:
+            logger.warning("Gemini image generation timed out")
+            raise ImageGenerationError("timeout") from error
+        except httpx.HTTPError as error:
+            logger.warning("Gemini image request failed: error_type=%s", type(error).__name__)
+            raise ImageGenerationError("network") from error
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.warning("Gemini image response was invalid: error_type=%s", type(error).__name__)
+            raise ImageGenerationError("invalid_response") from error

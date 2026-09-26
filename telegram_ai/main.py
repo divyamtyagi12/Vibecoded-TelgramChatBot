@@ -23,7 +23,6 @@ def run() -> None:
     ai = GeminiClient(
         settings.gemini_api_key,
         settings.gemini_model,
-        settings.gemini_image_model,
         settings.request_timeout_seconds,
     )
     handlers = TelegramAIHandlers(repository, ai, settings.max_context_messages)

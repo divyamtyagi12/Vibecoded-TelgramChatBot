@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
-from io import BytesIO
 
 from telegram import BotCommand, Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_ai.domain import ConversationMessage, GroupSettings, ParticipationMode, should_reply
-from telegram_ai.gemini import GeminiClient, ImageGenerationError
+from telegram_ai.gemini import GeminiClient
 from telegram_ai.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -33,7 +32,6 @@ class TelegramAIHandlers:
         await application.bot.set_my_commands(
             [
                 BotCommand("help", "Show how to use TelegramAI"),
-                BotCommand("image", "Generate an image: /image prompt"),
                 BotCommand("info", "Show this group's AI settings"),
                 BotCommand("feedback", "Rate the bot: /feedback 1-5 comment"),
                 BotCommand("settings", "Admin: show configuration"),
@@ -46,16 +44,9 @@ class TelegramAIHandlers:
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(
             "Mention me or reply to one of my messages to ask a question.\n\n"
-            "Everyone: /help, /image <prompt>, /info, /feedback 1-5 optional comment\n"
+            "Everyone: /help, /info, /feedback 1-5 optional comment\n"
             "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off"
         )
-
-    async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        prompt = " ".join(context.args).strip()
-        if not prompt:
-            await update.effective_message.reply_text("Usage: /image a cozy cabin in a snowy forest at sunset")
-            return
-        await self._send_image(update.effective_message, context, prompt)
 
     async def info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         settings = self.repository.get_settings(update.effective_chat.id)
@@ -164,11 +155,6 @@ class TelegramAIHandlers:
             await message.reply_text("What would you like help with?")
             return
 
-        image_prompt = self._image_prompt(prompt)
-        if image_prompt:
-            await self._send_image(message, context, image_prompt)
-            return
-
         if settings.memory_enabled:
             self.repository.add_context(
                 update.effective_chat.id,
@@ -190,31 +176,6 @@ class TelegramAIHandlers:
             )
         await message.reply_text(reply)
 
-    async def _send_image(self, message, context: ContextTypes.DEFAULT_TYPE, prompt: str) -> None:
-        await context.bot.send_chat_action(message.chat_id, "upload_photo")
-        try:
-            image_data, mime_type = await self.ai.generate_image(prompt)
-        except ImageGenerationError as error:
-            logger.warning(
-                "Image generation failed for chat %s: category=%s",
-                message.chat_id,
-                error.kind,
-            )
-            responses = {
-                "authentication": "Image generation is not configured correctly yet. Please try again later.",
-                "access": "Image generation is not enabled for this bot right now. Please try again later.",
-                "model": "The configured image model is unavailable right now. Please try again later.",
-                "rate_limited": "The image generator is busy right now. Please try again shortly.",
-                "timeout": "Image generation took too long. Please try again shortly.",
-            }
-            await message.reply_text(
-                responses.get(error.kind, "I couldn't generate that image just now. Please try again shortly.")
-            )
-            return
-        image_file = BytesIO(image_data)
-        image_file.name = "generated." + mime_type.split("/", 1)[1]
-        await message.reply_photo(image_file, caption="Generated image")
-
     @staticmethod
     def _request_text(text: str, bot_username: str | None = None) -> str:
         """Remove the Telegram routing mention before sending the request to Gemini."""
@@ -226,25 +187,6 @@ class TelegramAIHandlers:
             rf"(?<!\w){mention}\b", "", normalized, flags=re.IGNORECASE
         )
         return re.sub(r"\s+([,.:;!?])", r"\1", without_mentions).strip(" ,:-")
-
-    @staticmethod
-    def _image_prompt(text: str) -> str | None:
-        normalized = text.strip()
-        for prefix in (
-            "generate an image of ",
-            "generate an image ",
-            "generate image of ",
-            "generate image ",
-            "create an image of ",
-            "create an image ",
-            "make an image of ",
-            "make an image ",
-            "draw ",
-            "illustrate ",
-        ):
-            if normalized.lower().startswith(prefix):
-                return normalized[len(prefix) :].strip() or None
-        return None
 
     async def _is_admin(self, update: Update) -> bool:
         chat = update.effective_chat
@@ -274,7 +216,6 @@ class TelegramAIHandlers:
 def register_handlers(application: Application, handlers: TelegramAIHandlers) -> None:
     application.add_handler(CommandHandler("help", handlers.help))
     application.add_handler(CommandHandler("start", handlers.help))
-    application.add_handler(CommandHandler("image", handlers.image))
     application.add_handler(CommandHandler("info", handlers.info))
     application.add_handler(CommandHandler("settings", handlers.settings))
     application.add_handler(CommandHandler("style", handlers.style))

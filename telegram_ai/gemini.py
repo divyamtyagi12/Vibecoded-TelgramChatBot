@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
-import base64
-import logging
-
 import httpx
 
 from telegram_ai.domain import ConversationMessage, GroupSettings
 
-logger = logging.getLogger(__name__)
-
-
-class ImageGenerationError(RuntimeError):
-    """A safe, user-facing category for a failed image-generation request."""
-
-    def __init__(self, kind: str) -> None:
-        super().__init__("The image generator is temporarily unavailable.")
-        self.kind = kind
-
 
 class GeminiClient:
     def __init__(
-        self, api_key: str, model: str, image_model: str, timeout_seconds: float
+        self, api_key: str, model: str, timeout_seconds: float
     ) -> None:
         self.api_key = api_key
         self.model = model
-        self.image_model = image_model
         self.timeout_seconds = timeout_seconds
 
     async def answer(
@@ -85,46 +71,3 @@ class GeminiClient:
 
         # Do not include provider bodies or API keys in user-facing errors or logs.
         raise RuntimeError("The AI provider is temporarily unavailable.") from last_error
-
-    async def generate_image(self, prompt: str) -> tuple[bytes, str]:
-        request = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"responseModalities": ["IMAGE"]},
-        }
-        url = f"https://generativelanguage.googleapis.com/v1/models/{self.image_model}:generateContent"
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds * 4) as client:
-                response = await client.post(
-                    url, headers={"x-goog-api-key": self.api_key}, json=request
-                )
-                response.raise_for_status()
-                parts = response.json()["candidates"][0]["content"]["parts"]
-            image_part = next(part["inlineData"] for part in parts if "inlineData" in part)
-            image_data = base64.b64decode(image_part["data"], validate=True)
-            mime_type = image_part.get("mimeType", "image/png")
-            if not image_data or not mime_type.startswith("image/"):
-                raise ValueError("Gemini returned an invalid image")
-            return image_data, mime_type
-        except httpx.HTTPStatusError as error:
-            status_code = error.response.status_code
-            kind = {
-                401: "authentication",
-                403: "access",
-                404: "model",
-                429: "rate_limited",
-            }.get(status_code, "provider")
-            logger.warning(
-                "Gemini image generation failed: status=%s category=%s",
-                status_code,
-                kind,
-            )
-            raise ImageGenerationError(kind) from error
-        except httpx.TimeoutException as error:
-            logger.warning("Gemini image generation timed out")
-            raise ImageGenerationError("timeout") from error
-        except httpx.HTTPError as error:
-            logger.warning("Gemini image request failed: error_type=%s", type(error).__name__)
-            raise ImageGenerationError("network") from error
-        except (KeyError, IndexError, TypeError, ValueError) as error:
-            logger.warning("Gemini image response was invalid: error_type=%s", type(error).__name__)
-            raise ImageGenerationError("invalid_response") from error

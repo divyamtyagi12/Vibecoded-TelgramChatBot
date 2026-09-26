@@ -158,7 +158,7 @@ class TelegramAIHandlers:
         if not should_reply(settings, is_mentioned=is_mentioned, is_reply_to_bot=is_reply_to_bot):
             return
 
-        image_prompt = self._image_prompt(message.text)
+        image_prompt = self._image_prompt(message.text, bot.username)
         if image_prompt:
             await self._send_image(message, context, image_prompt)
             return
@@ -197,8 +197,10 @@ class TelegramAIHandlers:
         await message.reply_photo(image_file, caption="Generated image")
 
     @staticmethod
-    def _image_prompt(text: str) -> str | None:
+    def _image_prompt(text: str, bot_username: str | None = None) -> str | None:
         normalized = text.strip()
+        if bot_username and normalized.lower().startswith(f"@{bot_username.lower()}"):
+            normalized = normalized[len(bot_username) + 1 :].lstrip(" ,:-")
         for prefix in (
             "generate an image of ",
             "generate an image ",

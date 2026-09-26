@@ -14,14 +14,15 @@ class Settings:
     telegram_bot_token: str
     gemini_api_key: str
     gemini_model: str
+    telegram_webhook_secret: str
     database_path: Path
     max_context_messages: int
     request_timeout_seconds: float
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        application_directory = Path(__file__).resolve().parent
-        load_dotenv(application_directory / ".env")
+        project_directory = Path(__file__).resolve().parent.parent
+        load_dotenv(project_directory / ".env")
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         missing = [
@@ -43,14 +44,16 @@ class Settings:
         if not 1 <= timeout <= 60:
             raise RuntimeError("REQUEST_TIMEOUT_SECONDS must be between 1 and 60")
 
-        database_path = Path(os.getenv("DATABASE_PATH", "data/telegram_ai.sqlite3"))
+        default_database_path = "/tmp/telegram_ai.sqlite3" if os.getenv("VERCEL") else "data/telegram_ai.sqlite3"
+        database_path = Path(os.getenv("DATABASE_PATH", default_database_path))
         if not database_path.is_absolute():
-            database_path = application_directory / database_path
+            database_path = project_directory / database_path
 
         return cls(
             telegram_bot_token=token,
             gemini_api_key=api_key,
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,
             request_timeout_seconds=timeout,

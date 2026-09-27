@@ -92,7 +92,7 @@ class GeminiClient:
 
     async def _generate_text(self, request: dict) -> str:
         candidate_models = [self.model]
-        for fallback in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"):
+        for fallback in ("gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest", "gemini-2.5-flash-lite"):
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 

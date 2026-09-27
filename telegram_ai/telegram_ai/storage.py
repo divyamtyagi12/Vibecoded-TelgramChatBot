@@ -85,18 +85,18 @@ class SQLiteRepository:
         self.connection.commit()
 
     def add_context(self, chat_id: int, message: ConversationMessage) -> None:
+        # Saving short-term context is a best-effort side effect of every
+        # message. A locked/readonly database file should not take down the
+        # whole reply pipeline (it previously crashed before the AI was
+        # even called) — log and continue instead.
         try:
             self.connection.execute(
                 "INSERT INTO conversation_context (chat_id, author, text) VALUES (?, ?, ?)",
                 (chat_id, message.author[:128], message.text[:4000]),
             )
             self.connection.commit()
-        except sqlite3.OperationalError:
-            logger.warning(
-                "add_context: could not persist context for chat %s (OperationalError)",
-                chat_id,
-                exc_info=True,
-            )
+        except sqlite3.Error:
+            logger.exception("Failed to save conversation context for chat %s", chat_id)
 
     def get_context(self, chat_id: int, limit: int) -> list[ConversationMessage]:
         rows = self.connection.execute(

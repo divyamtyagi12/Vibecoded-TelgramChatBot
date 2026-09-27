@@ -98,11 +98,11 @@ class GeminiClient:
 
         last_error = None
         for model_name in candidate_models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
             try:
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                     response = await client.post(
-                        url, headers={"x-goog-api-key": self.api_key}, json=request
+                        url, json=request
                     )
                     response.raise_for_status()
                     payload = response.json()

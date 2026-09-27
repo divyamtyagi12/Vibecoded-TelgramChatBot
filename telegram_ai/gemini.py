@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 
 import httpx
 
 from telegram_ai.domain import ConversationMessage, GroupSettings
+
+logger = logging.getLogger(__name__)
+
+# Models to try in order — fastest/lightest first for group chat speed
+_FALLBACK_MODELS = (
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-pro-latest",
+)
+
+# Generation config tuned for fast casual group chat replies
+_CHAT_GEN_CONFIG = {
+    "temperature": 0.8,
+    "maxOutputTokens": 250,
+    "thinkingConfig": {"thinkingBudget": 0},  # disable thinking for speed
+}
 
 
 class GeminiClient:
@@ -46,7 +65,7 @@ class GeminiClient:
                     ],
                 }
             ],
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 300},
+            "generationConfig": _CHAT_GEN_CONFIG,
         }
         return await self._generate_text(request)
 
@@ -92,27 +111,50 @@ class GeminiClient:
 
     async def _generate_text(self, request: dict) -> str:
         candidate_models = [self.model]
-        for fallback in ("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash-lite"):
+        for fallback in _FALLBACK_MODELS:
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 
         last_error = None
         for model_name in candidate_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
-            try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                    response = await client.post(
-                        url, json=request
-                    )
+            # Retry up to 2 times on rate-limit (429) before trying next model
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                        response = await client.post(url, json=request)
+
+                    if response.status_code == 429:
+                        wait = 2 ** attempt  # 1s, 2s, 4s
+                        logger.warning("Rate limited on %s, retrying in %ss", model_name, wait)
+                        await asyncio.sleep(wait)
+                        last_error = httpx.HTTPStatusError(
+                            "429 Rate Limited", request=response.request, response=response
+                        )
+                        continue  # retry same model
+
                     response.raise_for_status()
                     payload = response.json()
-                parts = payload["candidates"][0]["content"]["parts"]
-                text = "".join(part.get("text", "") for part in parts).strip()
-                if not text:
-                    raise ValueError("Gemini returned no text")
-                return text
-            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
-                last_error = error
+                    parts = payload["candidates"][0]["content"]["parts"]
+                    text = "".join(part.get("text", "") for part in parts).strip()
+                    if not text:
+                        raise ValueError("Gemini returned no text")
+                    return text
+
+                except (KeyError, IndexError, TypeError, ValueError) as error:
+                    last_error = error
+                    break  # bad response structure → skip to next model
+                except httpx.HTTPStatusError as error:
+                    if error.response.status_code == 429:
+                        last_error = error
+                        continue  # already handled above but safety net
+                    last_error = error
+                    break  # non-429 HTTP error → skip to next model
+                except httpx.HTTPError as error:
+                    last_error = error
+                    break  # network error → skip to next model
+            else:
+                # All retries exhausted for this model, try next
                 continue
 
         # Do not include provider bodies or API keys in user-facing errors or logs.

@@ -46,7 +46,7 @@ class GeminiClient:
                     ],
                 }
             ],
-            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 300},
         }
         return await self._generate_text(request)
 
@@ -92,7 +92,7 @@ class GeminiClient:
 
     async def _generate_text(self, request: dict) -> str:
         candidate_models = [self.model]
-        for fallback in ("gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest", "gemini-2.5-flash-lite"):
+        for fallback in ("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash-lite"):
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 

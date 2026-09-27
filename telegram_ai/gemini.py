@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import httpx
 
 from telegram_ai.domain import ConversationMessage, GroupSettings
@@ -45,6 +47,49 @@ class GeminiClient:
             ],
             "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
         }
+        return await self._generate_text(request)
+
+    async def rate_photo(
+        self,
+        image_data: bytes,
+        mime_type: str,
+        request_text: str,
+        settings: GroupSettings,
+    ) -> str:
+        system_instruction = (
+            "You give concise, supportive feedback on a user-supplied photo for a Telegram group. "
+            "Start with a visual-presentation score out of 10, then give at most three useful, "
+            "specific suggestions. Rate composition, lighting, clarity, framing, and profile-photo "
+            "suitability when relevant. Do not rate attractiveness, guess identity, age, ethnicity, "
+            "health, or other sensitive personal traits. "
+            f"The group admin's requested communication style is: {settings.response_style}"
+        )
+        request = {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": base64.b64encode(image_data).decode("ascii"),
+                            }
+                        },
+                        {
+                            "text": (
+                                "Rate this photo. The user's requested focus is: "
+                                f"{request_text or 'general visual presentation'}"
+                            )
+                        },
+                    ],
+                }
+            ],
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 350},
+        }
+        return await self._generate_text(request)
+
+    async def _generate_text(self, request: dict) -> str:
         candidate_models = [self.model]
         for fallback in ("gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"):
             if fallback not in candidate_models:

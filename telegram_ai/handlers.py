@@ -7,6 +7,7 @@ import re
 
 from telegram import BotCommand, Update
 from telegram.constants import ChatMemberStatus
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_ai.domain import ConversationMessage, GroupSettings, ParticipationMode, should_reply
@@ -14,6 +15,7 @@ from telegram_ai.gemini import GeminiClient
 from telegram_ai.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 
 class TelegramAIHandlers:
@@ -44,6 +46,7 @@ class TelegramAIHandlers:
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(
             "Mention me or reply to one of my messages to ask a question.\n\n"
+            "Send a photo as a reply to me, or mention me in its caption, for a visual rating.\n\n"
             "Everyone: /help, /info, /feedback 1-5 optional comment\n"
             "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off"
         )
@@ -123,18 +126,7 @@ class TelegramAIHandlers:
         bot = self._bot_user or await context.bot.get_me()
         self._bot_user = bot
 
-        # Check entities first (the reliable Telegram way for @mentions)
-        mentioned_in_entities = any(
-            entity.type == "mention"
-            and message.text[entity.offset : entity.offset + entity.length].lower()
-            == f"@{bot.username.lower()}"
-            for entity in (message.entities or [])
-        )
-        # Fallback: plain text scan (covers edge cases)
-        mentioned_in_text = bool(
-            bot.username and f"@{bot.username.lower()}" in message.text.lower()
-        )
-        is_mentioned = mentioned_in_entities or mentioned_in_text
+        is_mentioned = self._is_mentioned(message.text, message.entities, bot.username)
         is_reply_to_bot = bool(
             message.reply_to_message
             and message.reply_to_message.from_user
@@ -176,6 +168,51 @@ class TelegramAIHandlers:
             )
         await message.reply_text(reply)
 
+    async def photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        if not message or not message.photo or message.from_user is None or message.from_user.is_bot:
+            return
+        settings = self.repository.get_settings(update.effective_chat.id)
+        bot = self._bot_user or await context.bot.get_me()
+        self._bot_user = bot
+        caption = message.caption or ""
+        is_mentioned = self._is_mentioned(caption, message.caption_entities, bot.username)
+        is_reply_to_bot = bool(
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == bot.id
+        )
+        if not should_reply(settings, is_mentioned=is_mentioned, is_reply_to_bot=is_reply_to_bot):
+            return
+
+        photo = message.photo[-1]
+        if photo.file_size and photo.file_size > MAX_PHOTO_BYTES:
+            await message.reply_text("Please send a photo no larger than 10 MB for a rating.")
+            return
+
+        await context.bot.send_chat_action(message.chat_id, "typing")
+        try:
+            photo_file = await context.bot.get_file(photo.file_id)
+            image_data = bytes(await photo_file.download_as_bytearray())
+        except TelegramError:
+            logger.exception("Photo download failed for chat %s", message.chat_id)
+            await message.reply_text("I couldn't download that photo. Please try again.")
+            return
+        if len(image_data) > MAX_PHOTO_BYTES:
+            await message.reply_text("Please send a photo no larger than 10 MB for a rating.")
+            return
+
+        request_text = self._request_text(caption, bot.username)
+        try:
+            rating = await self.ai.rate_photo(
+                image_data, "image/jpeg", request_text, settings
+            )
+        except RuntimeError:
+            logger.exception("Photo rating failed for chat %s", message.chat_id)
+            await message.reply_text("I couldn't rate that photo just now. Please try again shortly.")
+            return
+        await message.reply_text(rating)
+
     @staticmethod
     def _request_text(text: str, bot_username: str | None = None) -> str:
         """Remove the Telegram routing mention before sending the request to Gemini."""
@@ -187,6 +224,17 @@ class TelegramAIHandlers:
             rf"(?<!\w){mention}\b", "", normalized, flags=re.IGNORECASE
         )
         return re.sub(r"\s+([,.:;!?])", r"\1", without_mentions).strip(" ,:-")
+
+    @staticmethod
+    def _is_mentioned(text: str, entities, bot_username: str | None) -> bool:
+        if not bot_username:
+            return False
+        mention = f"@{bot_username.lower()}"
+        return any(
+            entity.type == "mention"
+            and text[entity.offset : entity.offset + entity.length].lower() == mention
+            for entity in (entities or [])
+        ) or mention in text.lower()
 
     async def _is_admin(self, update: Update) -> bool:
         chat = update.effective_chat
@@ -222,4 +270,5 @@ def register_handlers(application: Application, handlers: TelegramAIHandlers) ->
     application.add_handler(CommandHandler("mode", handlers.mode))
     application.add_handler(CommandHandler("memory", handlers.memory))
     application.add_handler(CommandHandler("feedback", handlers.feedback))
+    application.add_handler(MessageHandler(filters.PHOTO, handlers.photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.respond))

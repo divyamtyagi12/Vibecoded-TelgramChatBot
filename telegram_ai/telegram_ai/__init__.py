@@ -1,1 +1,0 @@
-"""TelegramAI group assistant."""

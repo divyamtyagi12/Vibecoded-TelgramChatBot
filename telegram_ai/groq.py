@@ -15,15 +15,14 @@ logger = logging.getLogger(__name__)
 _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Models to try in order — fastest first.
-# llama-4-scout is the only Groq model with vision support.
+# All valid as of September 2026 — check console.groq.com for updates.
 _FALLBACK_MODELS = (
-    "llama-3.3-70b-versatile",
-    "llama3-8b-8192",
-    "llama3-70b-8192",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
 )
 
-_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_VISION_MODEL = "openai/gpt-oss-120b"  # best available with potential vision support
 
 
 class GroqClient:

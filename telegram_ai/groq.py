@@ -43,7 +43,6 @@ class GroqClient:
         settings: GroupSettings,
         context: list[ConversationMessage],
     ) -> str:
-        context_text = "\n".join(f"{item.author}: {item.text}" for item in context)
         system_content = (
             "You are TelegramAI, a friendly member of this Telegram group. "
             "Reply in a casual, playful tone matching the user's language (English, Hindi, or Hinglish). "
@@ -51,14 +50,15 @@ class GroqClient:
             "Never be overly formal, apologize unnecessarily, or give generic help prompts. "
             f"The group admin's requested communication style is: {settings.response_style}"
         )
-        user_content = (
-            f"Recent opt-in group context:\n{context_text or '(none)'}\n\n"
-            f"Current user question:\n{prompt}"
-        )
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
+        # Build proper multi-turn message history so the model has real conversational memory
+        messages: list[dict] = [{"role": "system", "content": system_content}]
+        for msg in context:
+            if msg.author == "TelegramAI":
+                messages.append({"role": "assistant", "content": msg.text})
+            else:
+                messages.append({"role": "user", "content": f"{msg.author}: {msg.text}"})
+        # Add the current prompt as the latest user turn
+        messages.append({"role": "user", "content": prompt})
         return await self._chat(messages, max_tokens=250, temperature=0.8)
 
     async def rate_photo(

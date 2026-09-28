@@ -18,7 +18,7 @@ class GroupSettings:
     chat_id: int
     response_style: str = "Be helpful, concise, and welcoming."
     participation_mode: ParticipationMode = ParticipationMode.MENTION
-    memory_enabled: bool = False
+    memory_enabled: bool = True
 
 
 @dataclass(frozen=True)

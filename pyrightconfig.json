@@ -1,7 +1,6 @@
 {
   "pythonVersion": "3.13",
-  "venvPath": "c:/Users/divyam",
-  "venv": "venv",
+  "pythonPath": "C:/Users/divyam/AppData/Local/Programs/Python/Python313/python.exe",
   "extraPaths": [
     "c:/Users/divyam/Desktop/telegram_ai"
   ]

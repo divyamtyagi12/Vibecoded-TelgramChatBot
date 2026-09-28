@@ -10,16 +10,16 @@ from telegram import Update
 from telegram.ext import Application
 
 from telegram_ai.config import Settings
-from telegram_ai.gemini import GeminiClient
+from telegram_ai.groq import GroqClient
 from telegram_ai.handlers import TelegramAIHandlers, register_handlers
 from telegram_ai.storage import SQLiteRepository
 
 
 settings = Settings.from_environment()
 repository = SQLiteRepository(settings.database_path)
-ai = GeminiClient(
-    settings.gemini_api_key,
-    settings.gemini_model,
+ai = GroqClient(
+    settings.groq_api_key,
+    settings.groq_model,
     settings.request_timeout_seconds,
 )
 handlers = TelegramAIHandlers(repository, ai, settings.max_context_messages)

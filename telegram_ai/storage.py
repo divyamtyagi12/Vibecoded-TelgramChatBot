@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 class SQLiteRepository:
     def __init__(self, path: str | PathLike[str]) -> None:
         if str(path) != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # Read-only filesystem (e.g. Vercel serverless) — fall back to /tmp
+                path = "/tmp/telegram_ai.sqlite3"
+                logger.warning("Database path not writable, falling back to %s", path)
         self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")

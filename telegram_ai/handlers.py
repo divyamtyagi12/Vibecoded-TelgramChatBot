@@ -11,7 +11,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_ai.domain import ConversationMessage, GroupSettings, ParticipationMode, should_reply
-from telegram_ai.gemini import GeminiClient
+from telegram_ai.groq import GroqClient
 from telegram_ai.storage import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class TelegramAIHandlers:
     def __init__(
         self,
         repository: SQLiteRepository,
-        ai: GeminiClient,
+        ai: GroqClient,
         max_context: int,
     ) -> None:
         self.repository = repository
@@ -215,7 +215,7 @@ class TelegramAIHandlers:
 
     @staticmethod
     def _request_text(text: str, bot_username: str | None = None) -> str:
-        """Remove the Telegram routing mention before sending the request to Gemini."""
+        """Remove the Telegram routing mention before sending the request to the AI."""
         normalized = text.strip()
         if not bot_username:
             return normalized

@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
-    gemini_api_key: str
-    gemini_model: str
+    groq_api_key: str
+    groq_model: str
     telegram_webhook_secret: str
     database_path: Path
     max_context_messages: int
@@ -24,12 +24,12 @@ class Settings:
         project_directory = Path(__file__).resolve().parent.parent
         load_dotenv(project_directory / ".env")
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
         missing = [
             name
             for name, value in (
                 ("TELEGRAM_BOT_TOKEN", token),
-                ("GEMINI_API_KEY", api_key),
+                ("GROQ_API_KEY", api_key),
             )
             if not value
         ]
@@ -51,8 +51,8 @@ class Settings:
 
         return cls(
             telegram_bot_token=token,
-            gemini_api_key=api_key,
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            groq_api_key=api_key,
+            groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,

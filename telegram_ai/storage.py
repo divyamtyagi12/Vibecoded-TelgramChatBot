@@ -35,7 +35,6 @@ class SQLiteRepository:
             fallback = "/tmp/telegram_ai.sqlite3"
             logger.warning("DB path %s not writable, falling back to %s", path, fallback)
             return fallback
-        self._create_schema()
 
     def _create_schema(self) -> None:
         self.connection.executescript(

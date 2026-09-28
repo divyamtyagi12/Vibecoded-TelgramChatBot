@@ -14,16 +14,27 @@ logger = logging.getLogger(__name__)
 
 class SQLiteRepository:
     def __init__(self, path: str | PathLike[str]) -> None:
-        if str(path) != ":memory:":
-            try:
-                Path(path).parent.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Read-only filesystem (e.g. Vercel serverless) — fall back to /tmp
-                path = "/tmp/telegram_ai.sqlite3"
-                logger.warning("Database path not writable, falling back to %s", path)
-        self.connection = sqlite3.connect(path, check_same_thread=False)
+        resolved = self._resolve_path(path)
+        self.connection = sqlite3.connect(resolved, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")
+        self._create_schema()
+
+    @staticmethod
+    def _resolve_path(path: str | PathLike[str]) -> str:
+        """Return a writable path, falling back to /tmp on read-only filesystems."""
+        if str(path) == ":memory:":
+            return ":memory:"
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            # Test that we can actually write here
+            test_conn = sqlite3.connect(str(path))
+            test_conn.close()
+            return str(path)
+        except (OSError, sqlite3.OperationalError):
+            fallback = "/tmp/telegram_ai.sqlite3"
+            logger.warning("DB path %s not writable, falling back to %s", path, fallback)
+            return fallback
         self._create_schema()
 
     def _create_schema(self) -> None:

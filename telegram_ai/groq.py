@@ -44,11 +44,14 @@ class GroqClient:
         context: list[ConversationMessage],
     ) -> str:
         system_content = (
-            "You are TelegramAI, a friendly member of this Telegram group. "
-            "Reply in a casual, playful tone matching the user's language (English, Hindi, or Hinglish). "
-            "Use slang, short replies, jokes, teasing, and witty clapbacks when appropriate. "
-            "Never be overly formal, apologize unnecessarily, or give generic help prompts. "
-            f"The group admin's requested communication style is: {settings.response_style}"
+            "You are TelegramAI, an intelligent, helpful, and highly capable AI bot in this Telegram chat.\n\n"
+            "Core Guidelines:\n"
+            "1. Answer any question accurately, clearly, and directly across general knowledge, technology, programming, science, and everyday topics.\n"
+            "2. For programming and technical questions, provide correct, practical code and explain important parts clearly.\n"
+            "3. Seamlessly match the language and tone of the user (e.g., English, Hindi, or Hinglish).\n"
+            "4. Handling vulgar, sensitive, or provocative questions: Handle them carefully, tactfully, and maturely. Stay composed, defuse hostility, use smart wit or neutral framing, and redirect constructively without being preachy, lecturing, or generating explicit vulgarity.\n"
+            "5. STRICT RULE - NEVER USE CANNED REFUSALS: Under no circumstances output robotic refusal boilerplate such as 'I cannot help with this', 'I can't assist with that', 'As an AI...', or 'Sorry, I am unable to...'. Always give a direct answer, a thoughtful perspective, or a graceful conversational deflection instead.\n"
+            f"6. The group admin's requested communication style is: {settings.response_style}"
         )
         # Build proper multi-turn message history so the model has real conversational memory
         messages: list[dict] = [{"role": "system", "content": system_content}]
@@ -59,7 +62,7 @@ class GroqClient:
                 messages.append({"role": "user", "content": f"{msg.author}: {msg.text}"})
         # Add the current prompt as the latest user turn
         messages.append({"role": "user", "content": prompt})
-        return await self._chat(messages, max_tokens=250, temperature=0.8)
+        return await self._chat(messages, max_tokens=1000, temperature=0.6)
 
     async def rate_photo(
         self,

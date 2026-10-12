@@ -52,7 +52,7 @@ class Settings:
         return cls(
             telegram_bot_token=token,
             groq_api_key=api_key,
-            groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+            groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip(),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,

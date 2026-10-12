@@ -16,7 +16,10 @@ class ParticipationMode(StrEnum):
 @dataclass(frozen=True)
 class GroupSettings:
     chat_id: int
-    response_style: str = "Be helpful, concise, and welcoming."
+    response_style: str = (
+        "Chat naturally, casually, and concisely like a human in Telegram (1-4 sentences by default). "
+        "Avoid markdown tables, long checklists, or textbook articles unless explicitly asked."
+    )
     participation_mode: ParticipationMode = ParticipationMode.MENTION
     memory_enabled: bool = True
 

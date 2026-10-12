@@ -19,20 +19,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 class TestImports(unittest.TestCase):
     """Bug-class check: every module used via module.attr must be imported."""
 
-    def test_gemini_imports_httpx(self):
-        """The original bug: gemini.py used httpx but only imported stdlib http."""
-        import telegram_ai.gemini as gem
+    def test_groq_imports_httpx(self):
+        """The original bug: groq.py used httpx but only imported stdlib http."""
+        import telegram_ai.groq as gem
         self.assertIn(
             "httpx", dir(gem),
-            "httpx is not imported in gemini.py -- the original bug still present",
+            "httpx is not imported in groq.py -- the original bug still present",
         )
 
-    def test_gemini_does_not_use_stdlib_http_module(self):
-        """Confirm httpx (not stdlib http) is imported at the top of gemini.py."""
+    def test_groq_does_not_use_stdlib_http_module(self):
+        """Confirm httpx (not stdlib http) is imported at the top of groq.py."""
         import ast
         import inspect
         import textwrap
-        import telegram_ai.gemini as gem
+        import telegram_ai.groq as gem
 
         src = inspect.getsource(gem)
         tree = ast.parse(textwrap.dedent(src))
@@ -44,7 +44,7 @@ class TestImports(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     imported.add(node.module.split(".")[0])
-        self.assertIn("httpx", imported, "httpx must be imported in gemini.py")
+        self.assertIn("httpx", imported, "httpx must be imported in groq.py")
 
     def test_requirements_lists_httpx(self):
         """requirements.txt must explicitly list httpx."""
@@ -62,7 +62,7 @@ class TestImports(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 2. GeminiClient._generate_text unit tests
+# 2. GroqClient._generate_text unit tests
 # ---------------------------------------------------------------------------
 
 class FakeResponse:
@@ -87,15 +87,15 @@ class FakeResponse:
 
 
 def _ok_body(text: str = "hello") -> dict:
-    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
-class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
-    """Unit tests for GeminiClient._generate_text with a mocked httpx."""
+class TestGroqChatCompletion(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for GroqClient._generate_text with a mocked httpx."""
 
     def _make_client(self):
-        from telegram_ai.gemini import GeminiClient
-        return GeminiClient(api_key="FAKE", model="gemini-flash-lite-latest", timeout_seconds=5.0)
+        from telegram_ai.groq import GroqClient
+        return GroqClient(api_key="FAKE", model="openai/gpt-oss-120b", timeout_seconds=5.0)
 
     def _mock_http(self, post_coro):
         """Returns a mock AsyncClient context manager whose .post = post_coro."""
@@ -112,8 +112,8 @@ class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
         async def fake_post(*a, **kw):
             return FakeResponse(200, _ok_body("pong"))
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
-            result = await client._generate_text({"contents": []})
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
+            result = await client._chat([{"role": "user", "content": "hi"}])
 
         self.assertEqual(result, "pong")
 
@@ -129,9 +129,9 @@ class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
                 return FakeResponse(429)
             return FakeResponse(200, _ok_body("retried!"))
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
              patch("asyncio.sleep", new=AsyncMock()):
-            result = await client._generate_text({"contents": []})
+            result = await client._chat([{"role": "user", "content": "hi"}])
 
         self.assertEqual(result, "retried!")
         self.assertGreaterEqual(call_count, 2)
@@ -148,9 +148,9 @@ class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
                 return FakeResponse(500)
             return FakeResponse(200, _ok_body("from-fallback"))
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
              patch("asyncio.sleep", new=AsyncMock()):
-            result = await client._generate_text({"contents": []})
+            result = await client._chat([{"role": "user", "content": "hi"}])
 
         self.assertEqual(result, "from-fallback")
         self.assertGreaterEqual(call_count, 2)
@@ -162,10 +162,10 @@ class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
         async def fake_post(*a, **kw):
             return FakeResponse(500)
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)), \
              patch("asyncio.sleep", new=AsyncMock()):
             with self.assertRaises(RuntimeError) as ctx:
-                await client._generate_text({"contents": []})
+                await client._chat([{"role": "user", "content": "hi"}])
 
         self.assertIs(type(ctx.exception), RuntimeError)
 
@@ -182,22 +182,22 @@ class TestGeminiGenerateText(unittest.IsolatedAsyncioTestCase):
                 raise httpx.ConnectError("connection refused")
             return FakeResponse(200, _ok_body("network-recovered"))
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
-            result = await client._generate_text({"contents": []})
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
+            result = await client._chat([{"role": "user", "content": "hi"}])
 
         self.assertEqual(result, "network-recovered")
 
     # (f) Empty text candidates raises RuntimeError
     async def test_empty_candidates_raises_runtime_error(self):
         client = self._make_client()
-        empty_body = {"candidates": [{"content": {"parts": [{"text": ""}]}}]}
+        empty_body = {"choices": []}
 
         async def fake_post(*a, **kw):
             return FakeResponse(200, empty_body)
 
-        with patch("telegram_ai.gemini.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
+        with patch("telegram_ai.groq.httpx.AsyncClient", return_value=self._mock_http(fake_post)):
             with self.assertRaises(RuntimeError):
-                await client._generate_text({"contents": []})
+                await client._chat([{"role": "user", "content": "hi"}])
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +374,10 @@ class TestRespondHandler(unittest.IsolatedAsyncioTestCase):
 
     def _make_handler(self):
         from telegram_ai.storage import SQLiteRepository
-        from telegram_ai.gemini import GeminiClient
+        from telegram_ai.groq import GroqClient
         from telegram_ai.handlers import TelegramAIHandlers
         repo = SQLiteRepository(":memory:")
-        ai = MagicMock(spec=GeminiClient)
+        ai = MagicMock(spec=GroqClient)
         ai.answer = AsyncMock(return_value="AI reply")
         return TelegramAIHandlers(repo, ai, max_context=5), repo, ai
 
@@ -431,7 +431,7 @@ class TestRespondHandler(unittest.IsolatedAsyncioTestCase):
         await handler.respond(update, ctx)
         ai.answer.assert_awaited_once()
 
-    async def test_gemini_failure_sends_exact_user_facing_error(self):
+    async def test_groq_failure_sends_exact_user_facing_error(self):
         """CRITICAL: exact error string must match what is in handlers.py."""
         from telegram_ai.domain import GroupSettings, ParticipationMode
         handler, repo, ai = self._make_handler()
@@ -451,7 +451,7 @@ class TestRespondHandler(unittest.IsolatedAsyncioTestCase):
             f"User-facing error message mismatch: {replied_text!r}",
         )
 
-    async def test_gemini_failure_does_not_reraise(self):
+    async def test_groq_failure_does_not_reraise(self):
         """The RuntimeError must NOT propagate out of respond()."""
         from telegram_ai.domain import GroupSettings, ParticipationMode
         handler, repo, ai = self._make_handler()
@@ -474,10 +474,10 @@ class TestIsAdmin(unittest.IsolatedAsyncioTestCase):
 
     def _make_handler(self):
         from telegram_ai.storage import SQLiteRepository
-        from telegram_ai.gemini import GeminiClient
+        from telegram_ai.groq import GroqClient
         from telegram_ai.handlers import TelegramAIHandlers
         repo = SQLiteRepository(":memory:")
-        ai = MagicMock(spec=GeminiClient)
+        ai = MagicMock(spec=GroqClient)
         return TelegramAIHandlers(repo, ai, max_context=5)
 
     async def test_private_chat_always_admin(self):
@@ -536,10 +536,10 @@ class TestPhotoHandler(unittest.IsolatedAsyncioTestCase):
 
     def _make_handler(self):
         from telegram_ai.storage import SQLiteRepository
-        from telegram_ai.gemini import GeminiClient
+        from telegram_ai.groq import GroqClient
         from telegram_ai.handlers import TelegramAIHandlers
         repo = SQLiteRepository(":memory:")
-        ai = MagicMock(spec=GeminiClient)
+        ai = MagicMock(spec=GroqClient)
         ai.rate_photo = AsyncMock(return_value="8/10 -- great lighting!")
         return TelegramAIHandlers(repo, ai, max_context=5), repo, ai
 
@@ -651,16 +651,16 @@ class TestPublicAPISignatures(unittest.TestCase):
 
     def test_answer_signature(self):
         import inspect
-        from telegram_ai.gemini import GeminiClient
-        params = list(inspect.signature(GeminiClient.answer).parameters.keys())
+        from telegram_ai.groq import GroqClient
+        params = list(inspect.signature(GroqClient.answer).parameters.keys())
         self.assertIn("prompt", params)
         self.assertIn("settings", params)
         self.assertIn("context", params)
 
     def test_rate_photo_signature(self):
         import inspect
-        from telegram_ai.gemini import GeminiClient
-        params = list(inspect.signature(GeminiClient.rate_photo).parameters.keys())
+        from telegram_ai.groq import GroqClient
+        params = list(inspect.signature(GroqClient.rate_photo).parameters.keys())
         self.assertIn("image_data", params)
         self.assertIn("mime_type", params)
         self.assertIn("request_text", params)
@@ -671,5 +671,74 @@ class TestPublicAPISignatures(unittest.TestCase):
         self.assertTrue(callable(Settings.from_environment))
 
 
+# ---------------------------------------------------------------------------
+# 10. Natural Conversational Behavior & Token Allocation Tests
+# ---------------------------------------------------------------------------
+
+class TestNaturalChatResponseBehavior(unittest.IsolatedAsyncioTestCase):
+    def test_clean_chat_response_removes_intro_filler(self):
+        from telegram_ai.groq import _clean_chat_response
+        self.assertEqual(
+            _clean_chat_response("Certainly! Python is an interpreted language."),
+            "Python is an interpreted language.",
+        )
+        self.assertEqual(
+            _clean_chat_response("Sure thing! Paris is the capital."),
+            "Paris is the capital.",
+        )
+
+    def test_clean_chat_response_removes_closing_filler(self):
+        from telegram_ai.groq import _clean_chat_response
+        text = "L is better at deduction.\n\nHope this helps!"
+        self.assertEqual(
+            _clean_chat_response(text),
+            "L is better at deduction.",
+        )
+
+    def test_clean_chat_response_preserves_code_and_facts(self):
+        from telegram_ai.groq import _clean_chat_response
+        code = "```python\ndef is_palindrome(s):\n    return s == s[::-1]\n```"
+        self.assertEqual(_clean_chat_response(code), code)
+
+    def test_keyword_classification(self):
+        from telegram_ai.groq import _CODE_KEYWORDS_RE, _DETAILED_KEYWORDS_RE
+        # Code requests
+        self.assertTrue(bool(_CODE_KEYWORDS_RE.search("Write a python function to reverse a string")))
+        self.assertTrue(bool(_CODE_KEYWORDS_RE.search("How do I code this regex?")))
+        self.assertFalse(bool(_CODE_KEYWORDS_RE.search("What is Python?")))
+
+        # Detailed requests
+        self.assertTrue(bool(_DETAILED_KEYWORDS_RE.search("Explain machine learning in detail")))
+        self.assertTrue(bool(_DETAILED_KEYWORDS_RE.search("Give me a step-by-step guide to baking")))
+        self.assertFalse(bool(_DETAILED_KEYWORDS_RE.search("Who is smarter, Light or L?")))
+        self.assertFalse(bool(_DETAILED_KEYWORDS_RE.search("Why is the sky blue?")))
+
+    async def test_token_limits_selection_in_answer(self):
+        from telegram_ai.domain import GroupSettings
+        from telegram_ai.groq import GroqClient
+
+        client = GroqClient("FAKE", "openai/gpt-oss-120b", 5.0)
+        settings = GroupSettings(1)
+        captured_tokens = []
+
+        async def fake_completion(messages, **kwargs):
+            captured_tokens.append(kwargs.get("max_tokens"))
+            return {"role": "assistant", "content": "Direct concise answer."}
+
+        with patch.object(client, "_chat_completion", side_effect=fake_completion):
+            # Normal prompt -> 500
+            await client.answer("What is Python?", settings, [])
+            self.assertEqual(captured_tokens[-1], 500)
+
+            # Code prompt -> 2500
+            await client.answer("Write a python function to reverse a list", settings, [])
+            self.assertEqual(captured_tokens[-1], 2500)
+
+            # Detailed prompt -> 2000
+            await client.answer("Explain machine learning in detail", settings, [])
+            self.assertEqual(captured_tokens[-1], 2000)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

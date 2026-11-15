@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import logging
 import secrets
 
+# pyrefly: ignore[missing-import]
 from fastapi import FastAPI, Header, HTTPException, Request
 from telegram import Update
 from telegram.ext import Application

@@ -18,6 +18,9 @@ class Settings:
     database_path: Path
     max_context_messages: int
     request_timeout_seconds: float
+    groq_vision_model: str = "qwen/qwen3.8-27b"
+    history_retention_days: int = 14
+    max_context_tokens: int = 3000
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -44,10 +47,20 @@ class Settings:
         if not 1 <= timeout <= 60:
             raise RuntimeError("REQUEST_TIMEOUT_SECONDS must be between 1 and 60")
 
-        default_database_path = "/tmp/telegram_ai.sqlite3" if os.getenv("VERCEL") else "data/telegram_ai.sqlite3"
-        database_path = Path(os.getenv("DATABASE_PATH", default_database_path))
-        if not database_path.is_absolute():
-            database_path = project_directory / database_path
+        retention = int(os.getenv("HISTORY_RETENTION_DAYS", "14"))
+        if not 1 <= retention <= 365:
+            retention = 14
+
+        tokens_limit = int(os.getenv("MAX_CONTEXT_TOKENS", "3000"))
+        if not 500 <= tokens_limit <= 16000:
+            tokens_limit = 3000
+
+        if os.getenv("VERCEL"):
+            database_path = Path("/tmp/telegram_ai.sqlite3")
+        else:
+            database_path = Path(os.getenv("DATABASE_PATH", "data/telegram_ai.sqlite3"))
+            if not database_path.is_absolute():
+                database_path = project_directory / database_path
 
         return cls(
             telegram_bot_token=token,
@@ -57,4 +70,7 @@ class Settings:
             database_path=database_path,
             max_context_messages=max_context,
             request_timeout_seconds=timeout,
+            groq_vision_model=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip(),
+            history_retention_days=retention,
+            max_context_tokens=tokens_limit,
         )

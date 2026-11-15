@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 import secrets
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -14,6 +15,7 @@ from telegram_ai.groq import GroqClient
 from telegram_ai.handlers import TelegramAIHandlers, register_handlers
 from telegram_ai.storage import SQLiteRepository
 
+logger = logging.getLogger(__name__)
 
 settings = Settings.from_environment()
 repository = SQLiteRepository(settings.database_path)
@@ -21,22 +23,38 @@ ai = GroqClient(
     settings.groq_api_key,
     settings.groq_model,
     settings.request_timeout_seconds,
+    vision_model=settings.groq_vision_model,
 )
-handlers = TelegramAIHandlers(repository, ai, settings.max_context_messages)
+handlers = TelegramAIHandlers(
+    repository,
+    ai,
+    settings.max_context_messages,
+    max_tokens=settings.max_context_tokens,
+)
 telegram_application = Application.builder().token(settings.telegram_bot_token).build()
 register_handlers(telegram_application, handlers)
 
 
+async def _ensure_initialized() -> None:
+    if not getattr(telegram_application, "_initialized", False):
+        await telegram_application.initialize()
+        try:
+            await handlers.configure(telegram_application)
+        except Exception:
+            logger.warning("Could not configure bot commands on cold start", exc_info=True)
+        await telegram_application.start()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await telegram_application.initialize()
-    await handlers.configure(telegram_application)
-    await telegram_application.start()
+    await _ensure_initialized()
     try:
         yield
     finally:
-        await telegram_application.stop()
-        await telegram_application.shutdown()
+        if getattr(telegram_application, "running", False):
+            await telegram_application.stop()
+        if getattr(telegram_application, "_initialized", False):
+            await telegram_application.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -61,6 +79,10 @@ async def receive_update(
     ):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
+    await _ensure_initialized()
     update = Update.de_json(await request.json(), telegram_application.bot)
-    await telegram_application.process_update(update)
+    try:
+        await telegram_application.process_update(update)
+    except Exception:
+        logger.exception("Unhandled error while processing Telegram update")
     return {"ok": True}

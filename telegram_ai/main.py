@@ -20,12 +20,19 @@ def run() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     settings = Settings.from_environment()
     repository = SQLiteRepository(settings.database_path)
+    repository.cleanup_old_messages(settings.history_retention_days)
     ai = GroqClient(
         settings.groq_api_key,
         settings.groq_model,
         settings.request_timeout_seconds,
+        vision_model=settings.groq_vision_model,
     )
-    handlers = TelegramAIHandlers(repository, ai, settings.max_context_messages)
+    handlers = TelegramAIHandlers(
+        repository,
+        ai,
+        settings.max_context_messages,
+        max_tokens=settings.max_context_tokens,
+    )
     application = Application.builder().token(settings.telegram_bot_token).post_init(handlers.configure).build()
     register_handlers(application, handlers)
     application.run_polling(allowed_updates=["message"])

@@ -2,8 +2,11 @@
 __pycache__/
 *.py[cod]
 data/
+telegram_ai/data/
+telegram_ai/.env
 *.log
 .vercel/
-
 .vercel
 .env*
+.pytest_cache/
+coc-ai-android/

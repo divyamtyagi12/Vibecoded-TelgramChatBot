@@ -1,0 +1,11 @@
+.env
+.env*
+__pycache__/
+*.py[cod]
+data/
+*.log
+.vercel/
+.pytest_cache/
+coc-ai-android/
+tests/
+start_bot.bat

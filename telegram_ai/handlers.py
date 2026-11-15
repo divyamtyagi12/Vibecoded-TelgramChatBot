@@ -75,7 +75,10 @@ class TelegramAIHandlers:
         )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.effective_message.reply_text(
+        message = update.effective_message
+        if not message:
+            return
+        await message.reply_text(
             "Mention me or reply to one of my messages to ask a question.\n\n"
             "Send or reply to a photo/screenshot with a question (code analysis, math, memes, anime, general questions) "
             "or ask for a visual rating.\n\n"
@@ -84,8 +87,12 @@ class TelegramAIHandlers:
         )
 
     async def info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        settings = self.repository.get_settings(update.effective_chat.id)
-        await update.effective_message.reply_text(self._settings_summary(settings))
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return
+        settings = self.repository.get_settings(chat.id)
+        await message.reply_text(self._settings_summary(settings))
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._is_admin(update):
@@ -95,60 +102,78 @@ class TelegramAIHandlers:
     async def style(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._is_admin(update):
             return
-        style = " ".join(context.args).strip()
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return
+        style = " ".join(context.args or []).strip()
         if not style:
-            await update.effective_message.reply_text("Usage: /style Be concise and explain technical terms.")
+            await message.reply_text("Usage: /style Be concise and explain technical terms.")
             return
         if len(style) > 500:
-            await update.effective_message.reply_text("Keep the style instruction to 500 characters or fewer.")
+            await message.reply_text("Keep the style instruction to 500 characters or fewer.")
             return
-        current = self.repository.get_settings(update.effective_chat.id)
+        current = self.repository.get_settings(chat.id)
         self.repository.save_settings(
             GroupSettings(current.chat_id, style, current.participation_mode, current.memory_enabled)
         )
-        await update.effective_message.reply_text("Response style saved.")
+        await message.reply_text("Response style saved.")
 
     async def mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._is_admin(update):
             return
-        requested = " ".join(context.args).lower().strip()
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return
+        requested = " ".join(context.args or []).lower().strip()
         try:
             mode = ParticipationMode(requested)
         except ValueError:
-            await update.effective_message.reply_text("Usage: /mode mention|reply|always|off")
+            await message.reply_text("Usage: /mode mention|reply|always|off")
             return
-        current = self.repository.get_settings(update.effective_chat.id)
+        current = self.repository.get_settings(chat.id)
         self.repository.save_settings(
             GroupSettings(current.chat_id, current.response_style, mode, current.memory_enabled)
         )
-        await update.effective_message.reply_text(f"Participation mode is now: {mode.value}.")
+        await message.reply_text(f"Participation mode is now: {mode.value}.")
 
     async def memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._is_admin(update):
             return
-        requested = " ".join(context.args).lower().strip()
-        if requested not in {"on", "off"}:
-            await update.effective_message.reply_text("Usage: /memory on|off")
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
             return
-        current = self.repository.get_settings(update.effective_chat.id)
+        requested = " ".join(context.args or []).lower().strip()
+        if requested not in {"on", "off"}:
+            await message.reply_text("Usage: /memory on|off")
+            return
+        current = self.repository.get_settings(chat.id)
         self.repository.save_settings(
             GroupSettings(current.chat_id, current.response_style, current.participation_mode, requested == "on")
         )
         status = "enabled" if requested == "on" else "disabled"
-        await update.effective_message.reply_text(
+        await message.reply_text(
             f"Short conversation context is {status}. Existing local context is not sent while disabled."
         )
 
     async def feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not context.args or not context.args[0].isdigit() or not 1 <= int(context.args[0]) <= 5:
-            await update.effective_message.reply_text("Usage: /feedback 1-5 optional comment")
+        chat = update.effective_chat
+        user = update.effective_user
+        message = update.effective_message
+        if not chat or not user or not message:
             return
-        rating = int(context.args[0])
-        comment = " ".join(context.args[1:]).strip() or "No comment"
+        args = context.args or []
+        if not args or not args[0].isdigit() or not 1 <= int(args[0]) <= 5:
+            await message.reply_text("Usage: /feedback 1-5 optional comment")
+            return
+        rating = int(args[0])
+        comment = " ".join(args[1:]).strip() or "No comment"
         self.repository.add_feedback(
-            update.effective_chat.id, update.effective_user.id, rating, comment
+            chat.id, user.id, rating, comment
         )
-        await update.effective_message.reply_text("Thanks—your feedback has been recorded.")
+        await message.reply_text("Thanks—your feedback has been recorded.")
 
     # ------------------------------------------------------------------ #
     # Message Handlers                                                   #
@@ -156,10 +181,11 @@ class TelegramAIHandlers:
 
     async def respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
-        if not message or not message.text or message.from_user is None or message.from_user.is_bot:
+        chat = update.effective_chat
+        if not message or not chat or not message.text or message.from_user is None or message.from_user.is_bot:
             return
 
-        chat_id = update.effective_chat.id
+        chat_id = chat.id
         settings = self.repository.get_settings(chat_id)
         bot = self._bot_user or await context.bot.get_me()
         self._bot_user = bot
@@ -386,23 +412,24 @@ class TelegramAIHandlers:
 
     async def photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
-        if not message or message.from_user is None or message.from_user.is_bot:
+        chat = update.effective_chat
+        if not message or not chat or message.from_user is None or message.from_user.is_bot:
             return
 
         # Check for photo or document image
         photos = getattr(message, "photo", None)
         photo = photos[-1] if isinstance(photos, (list, tuple)) and len(photos) > 0 else None
+        raw_doc = getattr(message, "document", None)
+        raw_mime = getattr(raw_doc, "mime_type", None) if raw_doc is not None else None
         doc = (
-            message.document
-            if getattr(message, "document", None)
-            and isinstance(getattr(message.document, "mime_type", None), str)
-            and message.document.mime_type.startswith("image/")
+            raw_doc
+            if raw_doc is not None and isinstance(raw_mime, str) and raw_mime.startswith("image/")
             else None
         )
         if not photo and not doc:
             return
 
-        chat_id = update.effective_chat.id
+        chat_id = chat.id
         settings = self.repository.get_settings(chat_id)
         bot = self._bot_user or await context.bot.get_me()
         self._bot_user = bot
@@ -468,7 +495,7 @@ class TelegramAIHandlers:
             context.bot, file_id or ""
         )
 
-        if download_err:
+        if download_err or image_data is None:
             if download_err == "file_too_large":
                 if is_rating:
                     await message.reply_text("Please send a photo no larger than 10 MB for a rating.")
@@ -598,7 +625,7 @@ class TelegramAIHandlers:
             context.bot, file_id
         )
 
-        if download_err:
+        if download_err or image_data is None:
             logger.warning("Failed to fetch referenced image %s: reason=%s", file_id, download_err)
             # Check if we already have a cached summary in the parent message
             if parent_message_id:
@@ -731,7 +758,7 @@ class TelegramAIHandlers:
             context.bot, file_id
         )
 
-        if download_err:
+        if download_err or image_data is None:
             if download_err in ("not_found", "forbidden", "invalid_file_id"):
                 await message.reply_text(
                     "I tried to re-process the image, but the Telegram file has expired or is no longer accessible. Please re-upload the photo."
@@ -808,9 +835,11 @@ class TelegramAIHandlers:
         text = parent_msg.text or parent_msg.caption or ""
 
         photo = parent_msg.photo[-1] if getattr(parent_msg, "photo", None) else None
+        raw_p_doc = getattr(parent_msg, "document", None)
+        raw_p_mime = getattr(raw_p_doc, "mime_type", None) if raw_p_doc is not None else None
         doc = (
-            parent_msg.document
-            if getattr(parent_msg, "document", None) and (parent_msg.document.mime_type or "").startswith("image/")
+            raw_p_doc
+            if raw_p_doc is not None and isinstance(raw_p_mime, str) and raw_p_mime.startswith("image/")
             else None
         )
         media_type = "photo" if photo else ("document_image" if doc else "text")
@@ -890,7 +919,8 @@ class TelegramAIHandlers:
         member = await chat.get_member(user.id)
         if member.status in {ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR}:
             return True
-        await update.effective_message.reply_text("Only group admins can change bot settings.")
+        if update.effective_message:
+            await update.effective_message.reply_text("Only group admins can change bot settings.")
         return False
 
     @staticmethod

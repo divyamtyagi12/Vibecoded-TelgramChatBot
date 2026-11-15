@@ -10,8 +10,10 @@ from lxml import html
 
 logger = logging.getLogger(__name__)
 
+primp: Any = None
 try:
-    import primp
+    import primp as _primp
+    primp = _primp
     _HAS_PRIMP = True
 except ImportError:
     _HAS_PRIMP = False

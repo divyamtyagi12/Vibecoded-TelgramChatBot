@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import Any, Sequence
 
 from telegram_ai.domain import ConversationMessage
 from telegram_ai.storage import SQLiteRepository

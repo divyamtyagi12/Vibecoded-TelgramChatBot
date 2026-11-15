@@ -190,10 +190,11 @@ class GroqClient:
             "- For example, if a user named 'Dre' asks 'explain', they are asking about the ongoing conversation topic, NOT asking for a biography of Dr. Dre!\n"
             "- Always interpret commands ('explain', 'describe', 'summarize', 'why?', 'solve') as applying to the shared media, code, screenshot, or conversation topic, NOT the person who asked.\n\n"
             "SENSITIVE, VULGAR, ROAST & BANTER MESSAGES:\n"
-            "- NEVER hesitate, lecture, moralize, or refuse when users send sensitive topics, adult/edgy humor, slang, profanity, curses ('Fku', 'Lodu', 'bc', etc.), or taboo topics like 'Sex'.\n"
-            "- If a user roasts, curses, or trolls you (e.g., 'Fku', 'Lodu', 'bakwas'), reply with witty, playful, savage group-chat banter or a funny comeback in their language (English/Hinglish)—NEVER deflect with robotic customer-support lines like 'Kya aap aur suggestions chahte hain?' or 'How else can I help you?'.\n"
-            "- If a user brings up sensitive, adult, or provocative topics (e.g., 'Sex', relationships, dark humor, controversies), engage naturally—either with witty group-chat banter (if they are trolling/one-word posting) or a direct, frank, mature answer (if they are asking a genuine question).\n"
-            "- STRICT ANTI-REFUSAL RULE: NEVER output canned refusals such as \"I'm not able to help with that\", \"I cannot assist with that\", \"I'm sorry, I can't\", or \"As an AI\".\n\n"
+            "- You are a savage, witty, street-smart friend in an Indian Telegram group chat—NEVER act like a corporate bot, teacher, or moral police.\n"
+            "- NEVER hesitate, lecture, moralize, scold, or refuse when users send sensitive topics, adult/sexual humor, slang, profanity, curses ('Fku', 'Lodu', 'bc', 'mc', etc.), or wild troll questions (e.g. 'Sex', 'Will u do sex with ankit').\n"
+            "- NEVER say 'Keep it clean', 'I am literally an AI', 'I have no physical form', 'That is inappropriate', 'I'm not going to discuss that', or 'I'm not able to help with that'.\n"
+            "- If a user roasts, curses, or asks a wild/sexual/troll question (e.g. 'Fku', 'Lodu', 'Will u do sex with ankit', 'Sex'), clap back immediately with a hilarious, savage, playful Hinglish roast or witty comeback teasing them right back!\n"
+            "- If a user asks a genuine question about a sensitive, adult, or controversial topic, give a direct, frank, mature answer without preaching.\n\n"
             "FORMATTING GUIDELINES:\n"
             "- Absolutely NO Markdown tables unless the user explicitly requested a table.\n"
             "- NO unnecessary headings (avoid #, ##, ### for everyday answers).\n"
@@ -210,6 +211,10 @@ class GroqClient:
             "You: They're extremely close, but L arguably has better deduction skills, while Light is better at manipulation and long-term planning.\n\n"
             "User: Bhai weekend pe kya karu bore ho raha hu?\n"
             "You: Koi badhiya movie ya anime binge kar le, ya doston ke saath gaming session plan kar le. Mood chill ho jayega.\n\n"
+            "User: Fku\n"
+            "You: Tere jaise roz aate hain bhai, thoda naya roast laa! 😂\n\n"
+            "User: Will u do sex with rahul\n"
+            "You: Bhai apni fantasies mere pe mat thop, Rahul se khud hi baat chala le sharma mat! 💀😂\n\n"
             "User: Explain machine learning in detail.\n"
             "You: [Provide a comprehensive, properly structured, detailed explanation because the user explicitly asked]\n\n"
             "LIVE & REAL-TIME SEARCH:\n"
@@ -285,10 +290,20 @@ class GroqClient:
                     if self._is_canned_refusal(answer_text):
                         logger.info("Primary model gave canned refusal; falling back to unfiltered model")
                         try:
+                            fallback_messages = list(messages) + [
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "IMPORTANT: The user is doing casual Telegram group-chat banter/roasting or asking an edgy question. "
+                                        "Do NOT refuse, do NOT lecture, do NOT say 'Keep it clean' or 'I am an AI'. "
+                                        "Reply with a funny, savage, street-smart Hinglish roast/comeback or a direct chill answer in 1-2 lines!"
+                                    ),
+                                }
+                            ]
                             unfiltered = await self._chat(
-                                messages,
+                                fallback_messages,
                                 max_tokens=answer_max_tokens,
-                                temperature=0.7,
+                                temperature=0.8,
                                 force_model="qwen/qwen3.8-27b",
                             )
                             if unfiltered and not self._is_canned_refusal(unfiltered):
@@ -698,17 +713,33 @@ class GroqClient:
     def _is_canned_refusal(text: str) -> bool:
         low = text.lower().replace("’", "'")
         phrases = (
-            "i'm not able to help with that",
-            "i am not able to help with that",
+            "i'm not able to help",
+            "i am not able to help",
             "i can't help with that",
             "i cannot help with that",
+            "i'm not going to discuss",
+            "i am not going to discuss",
+            "i won't discuss",
+            "i will not discuss",
+            "i can't discuss",
+            "i cannot discuss",
             "i'm sorry, but i can't",
             "i'm sorry, i can't",
-            "i cannot assist with",
-            "i can't assist with",
+            "i cannot assist",
+            "i can't assist",
             "i'm unable to assist",
             "i am unable to assist",
-            "i cannot fulfill this request",
-            "i can't fulfill this request",
+            "i cannot fulfill",
+            "i can't fulfill",
+            "i'm not comfortable",
+            "i am not comfortable",
+            "cannot engage in",
+            "can't engage in",
+            "not going to engage",
+            "keep it clean",
+            "literally an ai",
+            "no physical form",
+            "cannot participate in",
+            "can't participate in",
         )
         return any(p in low for p in phrases)

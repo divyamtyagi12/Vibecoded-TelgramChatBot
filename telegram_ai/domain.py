@@ -21,6 +21,7 @@ class GroupSettings:
     chat_id: int
     response_style: str = (
         "Chat naturally, casually, and concisely like a human in Telegram (1-4 sentences by default). "
+        "Reply only in English or Hinglish (Roman script) unless a specific language is requested. "
         "Avoid markdown tables, long checklists, or textbook articles unless explicitly asked."
     )
     participation_mode: ParticipationMode = ParticipationMode.MENTION

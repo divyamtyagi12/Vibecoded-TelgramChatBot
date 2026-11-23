@@ -85,7 +85,13 @@ _TOOLS = [
 ]
 
 _LIVE_KEYWORDS_RE = re.compile(
-    r"\b(live|score|scorecard|train|pnr|running\s+status|timing|match|test\s+match|next\s+match|schedule|fixture|series|ind\s+vs|ind\s+nz|who\s+won|cricket|football|ipl|f1|weather|today|current\s+time)\b",
+    r"\b("
+    r"live|score|scorecard|train|pnr|running\s+status|timing|match|test\s+match|next\s+match|"
+    r"schedule|fixture|series|ind\s+vs|ind\s+nz|who\s+won|winner|champion|finals?|semi[- ]?finals?|"
+    r"tournament|on\s*going|ongoing|standings?|points?\s+table|leaderboard|qualifiers?|"
+    r"ffws|free\s+fire|bgmi|bmps|bgis|pmgc|valorant|vct|esports|world\s+cup|world\s+series|"
+    r"cricket|football|ipl|f1|weather|today|current\s+time|2025|2026|2027"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -238,8 +244,9 @@ class GroqClient:
             "You: [Provide a comprehensive, properly structured, detailed explanation because the user explicitly asked]\n\n"
             "LIVE & REAL-TIME SEARCH:\n"
             "- You have access to real-time tools: `web_search` and `fetch_webpage`.\n"
-            "- ALWAYS call `web_search` BEFORE answering whenever the user asks about sports matches (who will win, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, latest news, or current events. NEVER guess whether a match is home or away without searching or checking the user's message!\n"
-            "- If a user sends a short follow-up specifying teams or a match (e.g. 'Ind nz', 'India vs Australia') in reply to a question about a match, combine it with the conversation context and search for the current/upcoming series details (venue, dates, conditions) before answering.\n"
+            "- ALWAYS call `web_search` BEFORE answering whenever the user asks about ANY tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, latest news, or 2025/2026 events.\n"
+            "- NEVER say 'Mujhe confirm info nahi hai', 'Tournament ka naam aur saal batao', 'main search karke bata deta hoon', or ask the user for information you can search yourself! Just call `web_search` immediately using the tournament/topic from the current message + recent conversation context.\n"
+            "- When a user replies with a short clarification like '2026', 'Ffws global finals', 'On going tournament', or 'Ind nz', combine their reply with the previous messages in the conversation to form a complete search query (e.g. 'FFWS Global Finals 2026 ongoing tournament finalists standings') and call `web_search` immediately!\n"
             "- Train running status format (2-3 lines max): train name/number, current location/delay, next station.\n"
             "- Live score format (1-2 lines max): teams, score, match state.\n"
             "- Live timing format (1 line): city/timezone local time & date.\n\n"
@@ -288,6 +295,11 @@ class GroqClient:
                 )
         messages.append({"role": "user", "content": final_user_prompt})
 
+        combined_context_text = " ".join(
+            [m.text for m in context[-3:] if m.text and not m.is_bot and m.author != "TelegramAI"] + [prompt]
+        ).strip()
+        is_live_query = bool(_LIVE_KEYWORDS_RE.search(prompt) or _LIVE_KEYWORDS_RE.search(combined_context_text))
+
         # Run tool-execution loop (up to 2 tool rounds)
         tool_used = False
         for step in range(2):
@@ -302,9 +314,9 @@ class GroqClient:
             if not tool_calls:
                 answer_text = (msg.get("content") or "").strip()
                 if answer_text:
-                    # Check if the model gave a false negative / refusal despite being asked a live query
-                    if self._is_refusal_or_unaware(answer_text) and _LIVE_KEYWORDS_RE.search(prompt):
-                        logger.info("Model gave refusal on live query; executing fallback search")
+                    # Check if the model gave a false negative / refusal / "main search karke bata deta hoon" without actually searching
+                    if self._is_refusal_or_unaware(answer_text):
+                        logger.info("Model gave unaware/lazy response without searching; executing fallback search")
                         break
                     # Check if the primary model gave a canned safety refusal on a sensitive/banter message
                     if self._is_canned_refusal(answer_text):
@@ -365,16 +377,17 @@ class GroqClient:
                     "content": tool_result,
                 })
 
-        # If a live query was asked and tools were not triggered or model refused, do a proactive fallback search
-        if not tool_used and _LIVE_KEYWORDS_RE.search(prompt):
-            logger.info("Executing proactive live search for: %r", prompt)
-            search_data = await self.search_client.search(prompt, max_results=3)
+        # If a live query was asked (or model claimed it didn't have info) and tools were not triggered, do a proactive fallback search
+        if not tool_used and (is_live_query or self._is_refusal_or_unaware((msg.get("content") or "") if isinstance(msg, dict) else "")):
+            search_query = combined_context_text if len(prompt.split()) <= 5 and combined_context_text else prompt
+            logger.info("Executing proactive live search for: %r", search_query)
+            search_data = await self.search_client.search(search_query, max_results=4)
             messages.append({
                 "role": "user",
                 "content": (
-                    f"Here is real-time search information retrieved for this query:\n\n{search_data}\n\n"
-                    "Provide an ultra-concise, direct answer (1-3 sentences or short bullet points max). "
-                    "Do not include any pleasantries or filler."
+                    f"Here is real-time search information retrieved for this query ({search_query}):\n\n{search_data}\n\n"
+                    "Using these search results and the conversation context, provide a direct, accurate, concise answer (1-3 sentences max). "
+                    "NEVER say you don't have confirmed info or ask the user to tell you the tournament name again."
                 ),
             })
 
@@ -747,6 +760,15 @@ class GroqClient:
             "no test match info",
             "not cricket",
             "don't have information on",
+            "confirmed info nahi hai",
+            "confirm info nahi hai",
+            "info nahi hai",
+            "search karke bata deta",
+            "check karke bata deta",
+            "main check kar leta",
+            "abhi hua nahi hai",
+            "kaunsa game ka tournament",
+            "kaunsa tournament",
         )
         return any(p in low for p in phrases)
 

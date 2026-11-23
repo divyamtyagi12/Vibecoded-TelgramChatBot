@@ -18,7 +18,7 @@ class Settings:
     database_path: Path
     max_context_messages: int
     request_timeout_seconds: float
-    groq_vision_model: str = "qwen/qwen3.8-27b"
+    groq_vision_model: str = "nvidia/nemotron-3.5-super-vl"
     history_retention_days: int = 14
     max_context_tokens: int = 3000
 
@@ -27,7 +27,10 @@ class Settings:
         project_directory = Path(__file__).resolve().parent.parent
         load_dotenv(project_directory / ".env")
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
+        api_key = (
+            os.getenv("OPENROUTER_API_KEY", "").strip()
+            or os.getenv("GROQ_API_KEY", "").strip()
+        )
         missing = [
             name
             for name, value in (
@@ -62,15 +65,37 @@ class Settings:
             if not database_path.is_absolute():
                 database_path = project_directory / database_path
 
+        default_model = "nvidia/nemotron-3.5-super-vl" if api_key.startswith("sk-or-") else "openai/gpt-oss-120b"
+        raw_model = (
+            os.getenv("OPENROUTER_MODEL", "").strip()
+            or os.getenv("GROQ_MODEL", "").strip()
+            or default_model
+        )
+        if api_key.startswith("sk-or-") and raw_model in (
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3.8-27b",
+        ):
+            raw_model = "nvidia/nemotron-3.5-super-vl"
+
+        raw_vision_model = (
+            os.getenv("OPENROUTER_VISION_MODEL", "").strip()
+            or os.getenv("GROQ_VISION_MODEL", "").strip()
+            or ("nvidia/nemotron-3.5-super-vl" if api_key.startswith("sk-or-") else "qwen/qwen3.8-27b")
+        )
+        if api_key.startswith("sk-or-") and raw_vision_model == "qwen/qwen3.8-27b":
+            raw_vision_model = "nvidia/nemotron-3.5-super-vl"
+
         return cls(
             telegram_bot_token=token,
             groq_api_key=api_key,
-            groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip(),
+            groq_model=raw_model,
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,
             request_timeout_seconds=timeout,
-            groq_vision_model=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip(),
+            groq_vision_model=raw_vision_model,
             history_retention_days=retention,
             max_context_tokens=tokens_limit,
         )

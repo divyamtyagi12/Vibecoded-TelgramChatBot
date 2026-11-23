@@ -511,7 +511,7 @@ class TelegramAIHandlers:
 
         # Route between photo rating and general vision
         reply: str
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "qwen/qwen3.8-27b"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
         try:
             if is_rating:
                 reply = await self.ai.rate_photo(
@@ -663,7 +663,7 @@ class TelegramAIHandlers:
                 None,
             )
 
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "qwen/qwen3.8-27b"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
         try:
             if is_rating:
                 reply = await self.ai.rate_photo(
@@ -778,7 +778,7 @@ class TelegramAIHandlers:
             max_tokens=self.max_tokens,
         )
 
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "qwen/qwen3.8-27b"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
         try:
             if action == "rate_photo":
                 reply = await self.ai.rate_photo(

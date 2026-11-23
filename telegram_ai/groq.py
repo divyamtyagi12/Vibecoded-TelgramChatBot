@@ -19,6 +19,7 @@ from telegram_ai.vision import validate_and_process_image
 logger = logging.getLogger(__name__)
 
 _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+_OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Groq production models in priority order for text
 _FALLBACK_MODELS = (
@@ -27,9 +28,18 @@ _FALLBACK_MODELS = (
     "qwen/qwen3.8-27b",
 )
 
-# Active production vision model on Groq
-_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
+# OpenRouter production models in priority order
+_OPENROUTER_FALLBACK_MODELS = (
+    "nvidia/nemotron-3.5-super-vl",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "nvidia/nemotron-3.5-lightning",
+)
+
+# Default production vision model
+_DEFAULT_VISION_MODEL = "nvidia/nemotron-3.5-super-vl"
 _FALLBACK_VISION_MODELS = (
+    "nvidia/nemotron-3.5-super-vl",
+    "nvidia/nemotron-3.5-super-vl:free",
     "qwen/qwen3.8-27b",
 )
 
@@ -136,15 +146,21 @@ class GroqClient:
         model: str,
         timeout_seconds: float,
         search_client: WebSearchClient | None = None,
-        vision_model: str = _DEFAULT_VISION_MODEL,
+        vision_model: str | None = None,
     ) -> None:
         self.api_key = api_key
+        self.is_openrouter = api_key.startswith("sk-or-") or model.startswith("nvidia/")
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.search_client = search_client or WebSearchClient(
             timeout_seconds=min(timeout_seconds, 6.0)
         )
-        self.vision_model = vision_model
+        if vision_model:
+            self.vision_model = vision_model
+        else:
+            self.vision_model = (
+                "nvidia/nemotron-3.5-super-vl" if self.is_openrouter else "qwen/qwen3.8-27b"
+            )
 
     # ------------------------------------------------------------------ #
     # Public interface                                                   #
@@ -302,11 +318,16 @@ class GroqClient:
                                     ),
                                 }
                             ]
+                            unfiltered_model = (
+                                "nvidia/nemotron-3.5-super-vl"
+                                if self.is_openrouter
+                                else "qwen/qwen3.8-27b"
+                            )
                             unfiltered = await self._chat(
                                 fallback_messages,
                                 max_tokens=answer_max_tokens,
                                 temperature=0.8,
-                                force_model="qwen/qwen3.8-27b",
+                                force_model=unfiltered_model,
                             )
                             if unfiltered and not self._is_canned_refusal(unfiltered):
                                 return _clean_chat_response(unfiltered)
@@ -619,14 +640,18 @@ class GroqClient:
         force_model: str | None = None,
     ) -> dict[str, Any]:
         """Low-level chat completion caller with model fallback and 429 rate limit backoff."""
+        fallbacks = _OPENROUTER_FALLBACK_MODELS if self.is_openrouter else _FALLBACK_MODELS
         if force_model:
             candidate_models = [force_model]
+            if self.is_openrouter and force_model == "nvidia/nemotron-3.5-super-vl":
+                candidate_models.append("nvidia/nemotron-3.5-super-vl:free")
         else:
             candidate_models = [self.model]
-            for fallback in _FALLBACK_MODELS:
+            for fallback in fallbacks:
                 if fallback not in candidate_models:
                     candidate_models.append(fallback)
 
+        api_url = _OPENROUTER_API_URL if self.is_openrouter else _GROQ_API_URL
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -640,7 +665,9 @@ class GroqClient:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            if "gpt-oss" in model_name:
+            if self.is_openrouter or "nemotron" in model_name:
+                payload["reasoning"] = {"effort": "none"}
+            elif "gpt-oss" in model_name:
                 payload["reasoning_effort"] = "low"
             elif "qwen" in model_name:
                 payload["reasoning_effort"] = "none"
@@ -653,7 +680,7 @@ class GroqClient:
                 try:
                     async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                         response = await client.post(
-                            _GROQ_API_URL, json=payload, headers=headers
+                            api_url, json=payload, headers=headers
                         )
 
                     if response.status_code == 429:

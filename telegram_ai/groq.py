@@ -198,15 +198,20 @@ class GroqClient:
         settings: GroupSettings,
         context: list[ConversationMessage],
     ) -> str:
-        # Calculate current real-time timestamp (IST and UTC)
+        # Calculate current real-time timestamp (IST, US Eastern, and UTC)
         now_utc = datetime.now(timezone.utc)
         now_ist = now_utc + timedelta(hours=5, minutes=30)
+        # Approximate US Eastern Time (EDT Mar-Nov, EST Nov-Mar)
+        now_et = now_utc - timedelta(hours=5)
         current_time_str = (
-            f"Current Real-Time Clock: {now_ist.strftime('%A, %B %d, %Y, %I:%M %p')} IST "
-            f"({now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
+            f"TODAY'S EXACT DATE & TIME (AUTHORITATIVE — ALWAYS TRUST THIS 100%, NEVER CONTRADICT OR GUESS THE DAY OF WEEK): "
+            f"{now_ist.strftime('%A, %B %d, %Y, %I:%M %p')} IST | "
+            f"{now_et.strftime('%A, %B %d, %Y, %I:%M %p')} US Eastern (NYSE/NASDAQ time) | "
+            f"{now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC"
         )
 
         system_content = (
+            f"{current_time_str}\n\n"
             "You are a natural, intelligent person chatting in a Telegram group. "
             "You are direct, casual, and conversational—never sound like a textbook, formal assistant, or ChatGPT article.\n\n"
             "CONVERSATION & TONE:\n"

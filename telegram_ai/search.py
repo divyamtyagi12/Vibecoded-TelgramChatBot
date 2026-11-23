@@ -294,6 +294,12 @@ class WebSearchClient:
                             price = meta.get("regularMarketPrice")
                             prev = meta.get("chartPreviousClose") or meta.get("previousClose")
                             currency = meta.get("currency", "USD")
+                            market_ts = meta.get("regularMarketTime")
+                            ts_str = ""
+                            if isinstance(market_ts, (int, float)):
+                                from datetime import datetime, timezone as _tz
+                                dt = datetime.fromtimestamp(market_ts, tz=_tz.utc)
+                                ts_str = f" [last trade: {dt.strftime('%a, %d %b %Y %H:%M UTC')}]"
                             if price is not None:
                                 change_str = ""
                                 if prev:
@@ -302,7 +308,7 @@ class WebSearchClient:
                                     sign = "+" if diff >= 0 else ""
                                     change_str = f" ({sign}{diff:.2f} / {sign}{pct:.2f}% vs prev close {prev:.2f})"
                                 out_lines.append(
-                                    f"Live Market Quote: {shortname} ({symbol}) = {price:.2f} {currency}{change_str}"
+                                    f"Live Market Quote: {shortname} ({symbol}) = {price:.2f} {currency}{change_str}{ts_str}"
                                 )
                 if news:
                     out_lines.append("Recent Finance News:")

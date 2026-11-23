@@ -99,11 +99,6 @@ class TelegramAIHandlers:
                 BotCommand("style", "Admin: set answer style"),
                 BotCommand("mode", "Admin: set participation mode"),
                 BotCommand("memory", "Admin: enable/disable context"),
-                BotCommand("kick", "Admin: kick a user (reply or /kick @username)"),
-                BotCommand("ban", "Admin: ban a user (reply or /ban @username)"),
-                BotCommand("unban", "Admin: unban a user (reply or /unban @username)"),
-                BotCommand("mute", "Admin: mute a user (reply or /mute @username)"),
-                BotCommand("unmute", "Admin: unmute a user (reply or /unmute @username)"),
             ]
         )
 
@@ -116,7 +111,7 @@ class TelegramAIHandlers:
             "Send or reply to a photo/screenshot with a question (code analysis, math, memes, anime, general questions) "
             "or ask for a visual rating.\n\n"
             "Everyone: /help, /info, /feedback 1-5 optional comment\n"
-            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off, /kick, /ban, /unban, /mute, /unmute"
+            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off, or mention/reply to me to kick/mute/ban/unmute/unban a user"
         )
 
     async def info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -208,29 +203,63 @@ class TelegramAIHandlers:
         )
         await message.reply_text("Thanks—your feedback has been recorded.")
 
+    async def _is_command_addressed_to_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Ensure moderation slash commands (/kick, /ban, /mute, etc.) in groups only fire when the bot is explicitly mentioned or replied to."""
+        message = update.effective_message
+        chat = update.effective_chat
+        if not message or not chat:
+            return False
+        if chat.type == ChatType.PRIVATE:
+            return True
+        bot = self._bot_user or await context.bot.get_me()
+        self._bot_user = bot
+        text = message.text or ""
+        is_mentioned = self._is_mentioned(text, message.entities, bot.username)
+        is_reply_to_bot = bool(
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == bot.id
+        )
+        return is_mentioned or is_reply_to_bot
+
     async def kick(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin command to kick a member from the group (unbans immediately so they can rejoin if invited)."""
-        target_name = " ".join(context.args or []).strip()
+        """Admin command to kick a member from the group (only when bot is mentioned or replied to)."""
+        if not await self._is_command_addressed_to_bot(update, context):
+            return
+        bot = self._bot_user or await context.bot.get_me()
+        target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="kick", target_name=target_name)
 
     async def ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin command to permanently ban a member from the group."""
-        target_name = " ".join(context.args or []).strip()
+        """Admin command to permanently ban a member from the group (only when bot is mentioned or replied to)."""
+        if not await self._is_command_addressed_to_bot(update, context):
+            return
+        bot = self._bot_user or await context.bot.get_me()
+        target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="ban", target_name=target_name)
 
     async def unban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin command to unban a previously banned member."""
-        target_name = " ".join(context.args or []).strip()
+        """Admin command to unban a previously banned member (only when bot is mentioned or replied to)."""
+        if not await self._is_command_addressed_to_bot(update, context):
+            return
+        bot = self._bot_user or await context.bot.get_me()
+        target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="unban", target_name=target_name)
 
     async def mute(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin command to mute a member in the group."""
-        target_name = " ".join(context.args or []).strip()
+        """Admin command to mute a member in the group (only when bot is mentioned or replied to)."""
+        if not await self._is_command_addressed_to_bot(update, context):
+            return
+        bot = self._bot_user or await context.bot.get_me()
+        target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="mute", target_name=target_name)
 
     async def unmute(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin command to unmute a member in the group."""
-        target_name = " ".join(context.args or []).strip()
+        """Admin command to unmute a member in the group (only when bot is mentioned or replied to)."""
+        if not await self._is_command_addressed_to_bot(update, context):
+            return
+        bot = self._bot_user or await context.bot.get_me()
+        target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="unmute", target_name=target_name)
 
     async def _execute_moderation(

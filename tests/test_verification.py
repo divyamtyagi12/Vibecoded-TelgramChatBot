@@ -785,7 +785,8 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         target_msg = MagicMock()
         target_msg.from_user = MagicMock(id=666, full_name="Macman", username="macman", is_bot=False)
 
-        update = _make_update("/kick", chat_id=chat_id, user_id=42, reply_to_message=target_msg)
+        # User mentions @TestBot while replying to target_msg with /kick
+        update = _make_update("/kick @TestBot", chat_id=chat_id, user_id=42, reply_to_message=target_msg)
         admin_member = MagicMock(status=ChatMemberStatus.ADMINISTRATOR)
         target_member = MagicMock(status=ChatMemberStatus.MEMBER)
 
@@ -802,6 +803,20 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666)
         bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666, only_if_banned=True)
         update.effective_message.reply_text.assert_awaited_with("/kick @macman")
+
+    async def test_unmentioned_kick_command_in_group_is_ignored(self):
+        """Typing `/kick @someone` in a group without mentioning or replying to the bot must be ignored (e.g. meant for Rose)."""
+        handler, repo, ai = self._make_handler()
+        chat_id = -778
+        update = _make_update("/kick @kirkut_UVI_bot", chat_id=chat_id, user_id=42)
+        bot = _make_bot()
+        bot.ban_chat_member = AsyncMock()
+        ctx = _make_context(bot)
+        ctx.args = ["@kirkut_UVI_bot"]
+
+        await handler.kick(update, ctx)
+        bot.ban_chat_member.assert_not_awaited()
+        update.effective_message.reply_text.assert_not_awaited()
 
     async def test_mute_unmute_ban_unban_by_username(self):
         from telegram.constants import ChatMemberStatus

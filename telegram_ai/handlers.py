@@ -317,6 +317,7 @@ class TelegramAIHandlers:
             or (
                 r_doc is not None
                 and isinstance(getattr(r_doc, "mime_type", None), str)
+                # pyrefly: ignore[missing-attribute]
                 and r_doc.mime_type.startswith("image/")
             )
         )
@@ -876,6 +877,7 @@ class TelegramAIHandlers:
             if isinstance(fid, str):
                 return fid
         doc = getattr(msg, "document", None)
+        # pyrefly: ignore[missing-attribute]
         if doc and isinstance(getattr(doc, "mime_type", None), str) and doc.mime_type.startswith("image/"):
             fid = getattr(doc, "file_id", None)
             if isinstance(fid, str):

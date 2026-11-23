@@ -244,10 +244,11 @@ class GroqClient:
             "You: Bhai apni fantasies mere pe mat thop, Rahul se khud hi baat chala le sharma mat! 💀😂\n\n"
             "User: Explain machine learning in detail.\n"
             "You: [Provide a comprehensive, properly structured, detailed explanation because the user explicitly asked]\n\n"
-            "LIVE & REAL-TIME SEARCH:\n"
+            "LIVE & REAL-TIME SEARCH (MULTI-SOURCE VERIFICATION):\n"
             "- You have access to real-time tools: `web_search` and `fetch_webpage`.\n"
-            "- ALWAYS call `web_search` IMMEDIATELY BEFORE answering whenever the user asks about ANY news, stock/crypto prices (e.g. Nvidia/NVDA, Apple, Bitcoin, Nifty), tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, or 2025/2026 events.\n"
-            "- NEVER ask 'Want me to pull the latest live price?' or 'Mujhe confirm info nahi hai' or 'main search karke bata deta hoon'—just call `web_search` right away on the first turn and give the live facts/price directly!\n"
+            "- ALWAYS call `web_search` IMMEDIATELY BEFORE answering whenever the user asks about ANY news, fact-check/verification, stock/crypto prices (e.g. Nvidia/NVDA, Apple, Bitcoin, Nifty), tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, or 2025/2026 events.\n"
+            "- MULTI-SOURCE VERIFICATION: `web_search` returns results from multiple independent sources (Yahoo Finance, Google News, Bing, DuckDuckGo). ALWAYS cross-verify claims across multiple sources before answering. If multiple credible outlets confirm it, state the verified facts clearly and briefly mention 1-2 source names (e.g. 'Confirmed by CNBC and Barron's...'). If sources conflict or no credible outlet confirms a rumor, explicitly say it is unverified or conflicting rather than guessing.\n"
+            "- NEVER ask 'Want me to pull the latest live price?' or 'Mujhe confirm info nahi hai' or 'main search karke bata deta hoon'—just call `web_search` right away on the first turn and give the verified facts/price directly!\n"
             "- When a user replies with a short clarification like '2026', 'Ffws global finals', 'On going tournament', or 'Ind nz', combine their reply with the previous messages in the conversation to form a complete search query (e.g. 'FFWS Global Finals 2026 ongoing tournament finalists standings') and call `web_search` immediately!\n"
             "- Train running status format (2-3 lines max): train name/number, current location/delay, next station.\n"
             "- Live score format (1-2 lines max): teams, score, match state.\n"
@@ -392,9 +393,10 @@ class GroqClient:
             messages.append({
                 "role": "user",
                 "content": (
-                    f"Here is real-time search information retrieved for this query ({search_query}):\n\n{search_data}\n\n"
-                    "Using these search results and the conversation context, provide a direct, accurate, concise answer (1-3 sentences max). "
-                    "NEVER say you don't have confirmed info or ask the user to tell you the tournament name again."
+                    f"Here is real-time information retrieved from multiple sources for this query ({search_query}):\n\n{search_data}\n\n"
+                    "Cross-verify the facts across these sources and provide a direct, accurate, concise answer (1-3 sentences max), "
+                    "briefly citing 1-2 confirming sources where helpful. "
+                    "NEVER say you don't have confirmed info or ask the user to repeat the query."
                 ),
             })
 
@@ -402,8 +404,8 @@ class GroqClient:
             messages.append({
                 "role": "user",
                 "content": (
-                    "Provide an ultra-concise final answer (1-3 short bullet points or sentences max). "
-                    "Include only essential facts. Do not include pleasantries, disclaimers, or lengthy explanations."
+                    "Cross-verify the retrieved results across sources and provide an ultra-concise final answer (1-3 short bullet points or sentences max), "
+                    "briefly noting confirming sources if verifying news/facts. Do not include pleasantries, disclaimers, or lengthy explanations."
                 ),
             })
 

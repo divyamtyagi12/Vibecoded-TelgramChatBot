@@ -72,36 +72,39 @@ class WebSearchClient:
         self.timeout_seconds = timeout_seconds
 
     async def search(self, query: str, max_results: int = 5) -> str:
-        """Perform a web search and return structured snippets for the LLM."""
+        """Perform a multi-source web search in parallel so the LLM can cross-verify facts across outlets."""
         clean_query = query.strip()
         if not clean_query:
             return "No search query provided."
 
-        logger.info("Executing web search for: %r", clean_query)
+        logger.info("Executing multi-source web search for: %r", clean_query)
+
+        is_finance = bool(_FINANCE_QUERY_RE.search(clean_query))
+
+        tasks: list[Any] = [
+            self._search_ddg(clean_query, max_results=max_results),
+            self._search_bing_rss(clean_query, max_results=max_results),
+            self._search_google_news_rss(clean_query, max_results=min(max_results, 4)),
+        ]
+        if is_finance:
+            tasks.append(self._search_yahoo_finance(clean_query))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        ddg_res = results[0] if isinstance(results[0], str) else None
+        bing_res = results[1] if isinstance(results[1], str) else None
+        gnews_res = results[2] if isinstance(results[2], str) else None
+        finance_res = results[3] if is_finance and isinstance(results[3], str) else None
 
         sections: list[str] = []
-
-        # 1. If this looks like a stock/crypto/price query, fetch live Yahoo Finance quote + news
-        if _FINANCE_QUERY_RE.search(clean_query):
-            finance_info = await self._search_yahoo_finance(clean_query)
-            if finance_info:
-                sections.append(finance_info)
-
-        # 2. Primary web search: DuckDuckGo Lite
-        ddg_results = await self._search_ddg(clean_query, max_results=max_results)
-        if ddg_results:
-            sections.append(ddg_results)
-        else:
-            # 3. Datacenter-safe web fallback (DDG returns 202 Accepted on Vercel/AWS IPs): Bing RSS
-            bing_results = await self._search_bing_rss(clean_query, max_results=max_results)
-            if bing_results:
-                sections.append(bing_results)
-
-        # 4. If it's a news/latest query or we still have no results, fetch Google News RSS
-        if _NEWS_QUERY_RE.search(clean_query) or not sections:
-            gnews_results = await self._search_google_news_rss(clean_query, max_results=min(max_results, 4))
-            if gnews_results:
-                sections.append(gnews_results)
+        if finance_res:
+            sections.append(f"=== Source: Yahoo Finance ===\n{finance_res}")
+        if ddg_res:
+            sections.append(f"=== Source: DuckDuckGo Web ===\n{ddg_res}")
+        if bing_res:
+            sections.append(f"=== Source: Bing Web ===\n{bing_res}")
+        if gnews_res:
+            sections.append(f"=== Source: Google News ===\n{gnews_res}")
 
         if not sections:
             return f"No results found or search failed for: {clean_query}"

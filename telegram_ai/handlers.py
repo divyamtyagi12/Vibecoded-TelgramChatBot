@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import logging
 import re
@@ -79,6 +80,20 @@ class TelegramAIHandlers:
         self.max_context = max_context
         self.max_tokens = max_tokens
         self._bot_user = None
+        self._processed_messages: OrderedDict[tuple[int, int], None] = OrderedDict()
+
+    def _claim_message(self, chat_id: int, message_id: int | None) -> bool:
+        """Return True if this (chat_id, message_id) has not been processed yet; prevents double replies."""
+        if not isinstance(message_id, int):
+            return True
+        key = (chat_id, message_id)
+        if key in self._processed_messages:
+            logger.info("Skipping duplicate message delivery: chat=%s msg=%s", chat_id, message_id)
+            return False
+        self._processed_messages[key] = None
+        if len(self._processed_messages) > 500:
+            self._processed_messages.popitem(last=False)
+        return True
 
     async def configure(self, application: Application) -> None:
         await application.bot.set_my_commands(
@@ -265,6 +280,9 @@ class TelegramAIHandlers:
 
         if not prompt_with_quote:
             await message.reply_text("What would you like help with?")
+            return
+
+        if not self._claim_message(chat_id, msg_id):
             return
 
         # -------------------------------------------------------------- #
@@ -512,6 +530,9 @@ class TelegramAIHandlers:
                 self.repository.add_context(chat_id, current_msg)
             return
 
+        if not self._claim_message(chat_id, msg_id):
+            return
+
         prompt = self._request_text(caption, bot.username)
         if quote_text:
             prompt = f'[Quoting: "{quote_text}"]\n{prompt}' if prompt else f'[Quoting: "{quote_text}"]'
@@ -548,7 +569,7 @@ class TelegramAIHandlers:
 
         # Route between photo rating and general vision
         reply: str
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl:free"))
         try:
             if is_rating:
                 reply = await self.ai.rate_photo(
@@ -700,7 +721,7 @@ class TelegramAIHandlers:
                 None,
             )
 
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl:free"))
         try:
             if is_rating:
                 reply = await self.ai.rate_photo(
@@ -815,7 +836,7 @@ class TelegramAIHandlers:
             max_tokens=self.max_tokens,
         )
 
-        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl"))
+        logger.info("Vision model selected: %s", getattr(self.ai, "vision_model", "nvidia/nemotron-3.5-super-vl:free"))
         try:
             if action == "rate_photo":
                 reply = await self.ai.rate_photo(

@@ -18,7 +18,7 @@ class Settings:
     database_path: Path
     max_context_messages: int
     request_timeout_seconds: float
-    groq_vision_model: str = "nvidia/nemotron-3.5-super-vl"
+    groq_vision_model: str = "nvidia/nemotron-3.5-super-vl:free"
     history_retention_days: int = 14
     max_context_tokens: int = 3000
 
@@ -65,27 +65,35 @@ class Settings:
             if not database_path.is_absolute():
                 database_path = project_directory / database_path
 
-        default_model = "nvidia/nemotron-3.5-super-vl" if api_key.startswith("sk-or-") else "openai/gpt-oss-120b"
+        default_model = "nvidia/nemotron-3.5-super-vl:free" if api_key.startswith("sk-or-") else "openai/gpt-oss-120b"
         raw_model = (
             os.getenv("OPENROUTER_MODEL", "").strip()
             or os.getenv("GROQ_MODEL", "").strip()
             or default_model
         )
-        if api_key.startswith("sk-or-") and raw_model in (
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "llama-3.3-70b-versatile",
-            "qwen/qwen3.8-27b",
+        if api_key.startswith("sk-or-") and (
+            raw_model
+            in (
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+                "llama-3.3-70b-versatile",
+                "qwen/qwen3.8-27b",
+                "nvidia/nemotron-3.5-super-vl",
+            )
+            or not raw_model.endswith(":free")
         ):
-            raw_model = "nvidia/nemotron-3.5-super-vl"
+            raw_model = "nvidia/nemotron-3.5-super-vl:free"
 
         raw_vision_model = (
             os.getenv("OPENROUTER_VISION_MODEL", "").strip()
             or os.getenv("GROQ_VISION_MODEL", "").strip()
-            or ("nvidia/nemotron-3.5-super-vl" if api_key.startswith("sk-or-") else "qwen/qwen3.8-27b")
+            or ("nvidia/nemotron-3.5-super-vl:free" if api_key.startswith("sk-or-") else "qwen/qwen3.8-27b")
         )
-        if api_key.startswith("sk-or-") and raw_vision_model == "qwen/qwen3.8-27b":
-            raw_vision_model = "nvidia/nemotron-3.5-super-vl"
+        if api_key.startswith("sk-or-") and (
+            raw_vision_model in ("qwen/qwen3.8-27b", "nvidia/nemotron-3.5-super-vl")
+            or not raw_vision_model.endswith(":free")
+        ):
+            raw_vision_model = "nvidia/nemotron-3.5-super-vl:free"
 
         return cls(
             telegram_bot_token=token,

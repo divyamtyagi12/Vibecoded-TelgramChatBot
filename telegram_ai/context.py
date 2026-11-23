@@ -81,6 +81,40 @@ def find_image_in_conversation(
     return None, None, None
 
 
+def summarize_trimmed_messages(trimmed: Sequence[ConversationMessage], max_chars: int = 600) -> ConversationMessage | None:
+    """Compact older trimmed messages into a concise summary entry so long discussions retain key context."""
+    if not trimmed:
+        return None
+    snippets: list[str] = []
+    for msg in trimmed:
+        speaker = "Assistant" if (msg.is_bot or msg.author == "TelegramAI") else (msg.author or "User")
+        text = " ".join((msg.text or "").split())
+        if len(text) > 100:
+            text = text[:97] + "..."
+        if msg.media_summary:
+            media_note = " ".join(msg.media_summary.split())[:80]
+            entry = f"{speaker} [image: {media_note}]: {text}" if text else f"{speaker} shared image ({media_note})"
+        elif text:
+            entry = f"{speaker}: {text}"
+        else:
+            continue
+        snippets.append(entry)
+
+    if not snippets:
+        return None
+
+    joined = " | ".join(snippets)
+    if len(joined) > max_chars:
+        joined = joined[: max_chars - 3].rstrip() + "..."
+
+    return ConversationMessage(
+        author="ConversationSummary",
+        text=f"[Earlier conversation summary: {joined}]",
+        is_bot=False,
+        media_type="summary",
+    )
+
+
 def assemble_context(
     repository: SQLiteRepository,
     chat_id: int,
@@ -96,7 +130,7 @@ def assemble_context(
     2. Relevant reply-chain history (traversed backwards up to root)
     3. Relevant image context (media_summary)
     4. Recent messages from the same discussion/thread (when not in an isolated reply chain)
-    5. Token budget enforcement
+    5. Token budget enforcement with automatic summarization of older trimmed turns
     
     Guarantees:
     - Never includes current_message in the returned context (prevents duplicate prompt).
@@ -117,12 +151,15 @@ def assemble_context(
     if current_message.message_id is not None:
         used_ids.add(current_message.message_id)
 
+    # Fetch slightly deeper history so older turns can be summarized rather than silently lost
+    fetch_depth = max(max_messages, min(max_messages * 2, 20))
+
     # 1 & 2. Reply Chain Reconstruction
     if current_message.reply_to_message_id is not None:
         chain = repository.get_reply_chain(
             chat_id,
             current_message.reply_to_message_id,
-            max_depth=max_messages,
+            max_depth=fetch_depth,
         )
         for msg in chain:
             if msg.message_id and msg.message_id in used_ids:
@@ -137,7 +174,7 @@ def assemble_context(
         recent = repository.get_thread_context(
             chat_id,
             thread_id=current_message.thread_id,
-            limit=max_messages,
+            limit=fetch_depth,
             exclude_message_ids=used_ids,
         )
         for msg in recent:
@@ -147,11 +184,25 @@ def assemble_context(
             if msg.message_id:
                 used_ids.add(msg.message_id)
 
+    trimmed: list[ConversationMessage] = []
+
+    # Enforce message-count window while keeping overflow for compact summary
+    if max_messages > 0 and len(context) > max_messages:
+        overflow_count = len(context) - max_messages
+        trimmed.extend(context[:overflow_count])
+        context = context[overflow_count:]
+
     # Enforce token limit (trim oldest ancestors first, always keep most recent)
     total_tokens = sum(estimate_message_tokens(m) for m in context)
     while context and total_tokens > max_tokens:
         removed = context.pop(0)
+        trimmed.append(removed)
         total_tokens -= estimate_message_tokens(removed)
+
+    if trimmed:
+        summary_msg = summarize_trimmed_messages(trimmed)
+        if summary_msg and (total_tokens + estimate_message_tokens(summary_msg) <= max_tokens):
+            context.insert(0, summary_msg)
 
     return context
 

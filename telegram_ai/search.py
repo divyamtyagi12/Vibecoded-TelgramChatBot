@@ -247,8 +247,12 @@ class WebSearchClient:
             lines: list[str] = ["Latest News Headlines:"]
             for idx, item in enumerate(items[:max_results], start=1):
                 title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
                 pub_date = (item.findtext("pubDate") or "").strip()
-                lines.append(f"- {title} ({pub_date})" if pub_date else f"- {title}")
+                line = f"- {title} ({pub_date})" if pub_date else f"- {title}"
+                if link:
+                    line += f"\n  URL: {link}"
+                lines.append(line)
             return "\n".join(lines)
         except Exception as exc:
             logger.warning("Google News RSS failed for %r: %s", clean_query, exc)

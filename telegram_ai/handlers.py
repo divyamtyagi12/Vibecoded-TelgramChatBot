@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-from telegram import BotCommand, Message, Update
+from telegram import BotCommand, ChatPermissions, Message, Update
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -66,11 +66,11 @@ _UNRELATED_TOPIC_SWITCH_RE = re.compile(
 )
 
 
-_KICK_COMMAND_RE = re.compile(
-    r"^(?:type\s+|please\s+|pls\s+|chal\s+|bhai\s+|bot\s+)?"
-    r"(?:/kick|kick(?:\s+out)?|ban|nikal(?:\s+de)?|bhaga(?:\s+de)?)"
-    r"(?:\s+(?:to|out|user))?"
-    r"(?:\s+([@\w\s.-]{1,40}))?[!.]*$",
+_MODERATION_COMMAND_RE = re.compile(
+    r"^(?:type\s+|run\s+|execute\s+|use\s+|do\s+|please\s+|pls\s+|chal\s+|bhai\s+|bot\s+|can\s+you\s+|karde\s+)*"
+    r"/?(?P<action>kick(?:\s+out)?|ban|unban|mute|unmute|nikal(?:\s+de)?|bhaga(?:\s+de)?|chup\s+kara(?:\s+de)?)"
+    r"(?:\s+(?:to|out|user|member|kar(?:de|o)?))*"
+    r"(?:\s+(?P<target>[@\w\s.-]{1,40}))?[!.]*$",
     re.IGNORECASE,
 )
 
@@ -99,8 +99,11 @@ class TelegramAIHandlers:
                 BotCommand("style", "Admin: set answer style"),
                 BotCommand("mode", "Admin: set participation mode"),
                 BotCommand("memory", "Admin: enable/disable context"),
-                BotCommand("kick", "Admin: kick a user (reply or /kick <name>)"),
-                BotCommand("ban", "Admin: ban a user (reply or /ban <name>)"),
+                BotCommand("kick", "Admin: kick a user (reply or /kick @username)"),
+                BotCommand("ban", "Admin: ban a user (reply or /ban @username)"),
+                BotCommand("unban", "Admin: unban a user (reply or /unban @username)"),
+                BotCommand("mute", "Admin: mute a user (reply or /mute @username)"),
+                BotCommand("unmute", "Admin: unmute a user (reply or /unmute @username)"),
             ]
         )
 
@@ -113,7 +116,7 @@ class TelegramAIHandlers:
             "Send or reply to a photo/screenshot with a question (code analysis, math, memes, anime, general questions) "
             "or ask for a visual rating.\n\n"
             "Everyone: /help, /info, /feedback 1-5 optional comment\n"
-            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off, /kick, /ban"
+            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off, /kick, /ban, /unban, /mute, /unmute"
         )
 
     async def info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -208,27 +211,42 @@ class TelegramAIHandlers:
     async def kick(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Admin command to kick a member from the group (unbans immediately so they can rejoin if invited)."""
         target_name = " ".join(context.args or []).strip()
-        await self._execute_kick_or_ban(update, context, target_name=target_name, permanent_ban=False)
+        await self._execute_moderation(update, context, action="kick", target_name=target_name)
 
     async def ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Admin command to permanently ban a member from the group."""
         target_name = " ".join(context.args or []).strip()
-        await self._execute_kick_or_ban(update, context, target_name=target_name, permanent_ban=True)
+        await self._execute_moderation(update, context, action="ban", target_name=target_name)
 
-    async def _execute_kick_or_ban(
+    async def unban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to unban a previously banned member."""
+        target_name = " ".join(context.args or []).strip()
+        await self._execute_moderation(update, context, action="unban", target_name=target_name)
+
+    async def mute(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to mute a member in the group."""
+        target_name = " ".join(context.args or []).strip()
+        await self._execute_moderation(update, context, action="mute", target_name=target_name)
+
+    async def unmute(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to unmute a member in the group."""
+        target_name = " ".join(context.args or []).strip()
+        await self._execute_moderation(update, context, action="unmute", target_name=target_name)
+
+    async def _execute_moderation(
         self,
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         *,
+        action: str = "kick",
         target_name: str = "",
-        permanent_ban: bool = False,
     ) -> bool:
         chat = update.effective_chat
         message = update.effective_message
         if not chat or not message:
             return False
         if chat.type == ChatType.PRIVATE:
-            await message.reply_text("Kick/ban only works in group chats.")
+            await message.reply_text(f"/{action} only works in group chats.")
             return True
         if not await self._is_admin(update):
             return True
@@ -238,12 +256,18 @@ class TelegramAIHandlers:
 
         target_user_id: int | None = None
         target_display: str = target_name.strip()
+        # Clean trailing prepositions or noise like "from group"
+        target_display = re.sub(r"\s+(?:from\s+(?:the\s+)?(?:group|chat)|now|please|pls)$", "", target_display, flags=re.IGNORECASE).strip()
 
         # 1. Check for text_mention entity (e.g. user tapped someone's name in Telegram)
         for ent in (message.entities or []):
             if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
                 target_user_id = ent.user.id
-                target_display = ent.user.full_name or target_display
+                target_display = (
+                    f"@{ent.user.username}"
+                    if getattr(ent.user, "username", None)
+                    else (ent.user.full_name or target_display)
+                )
                 break
 
         # 2. If no explicit target name provided (or replying directly to the target user's message)
@@ -251,55 +275,107 @@ class TelegramAIHandlers:
             replied_user = message.reply_to_message.from_user
             if not target_display and replied_user.id != bot.id:
                 target_user_id = replied_user.id
-                target_display = replied_user.full_name or "User"
+                target_display = (
+                    f"@{replied_user.username}"
+                    if getattr(replied_user, "username", None)
+                    else (replied_user.full_name or "User")
+                )
             elif target_display and target_display.lower().lstrip("@") in (
                 (replied_user.full_name or "").lower(),
                 (replied_user.username or "").lower(),
             ):
                 target_user_id = replied_user.id
-                target_display = replied_user.full_name or target_display
+                target_display = (
+                    f"@{replied_user.username}"
+                    if getattr(replied_user, "username", None)
+                    else (replied_user.full_name or target_display)
+                )
 
-        # 3. Look up target_name in recent chat history
+        # 3. Look up target_name (@username or display name) in known_users and recent chat history
         if target_user_id is None and target_display:
-            found = self.repository.find_user_by_name(chat.id, target_display)
-            if found:
-                target_user_id, target_display = found
+            if target_display.lstrip("@").isdigit():
+                target_user_id = int(target_display.lstrip("@"))
+            else:
+                found = self.repository.find_user_by_name(chat.id, target_display)
+                if found:
+                    target_user_id, matched_label = found
+                    if not target_display.startswith("@"):
+                        target_display = matched_label
+
+        cmd_text = f"/{action} {target_display}".strip()
 
         if target_user_id is None:
+            # Output the requested slash command (so any external admin bot like Rose can also see it)
+            # and inform the admin if we don't have the user's numeric ID cached yet.
             if target_display:
                 await message.reply_text(
-                    f"Couldn't find '{target_display}' in recent messages. Reply directly to their message with `/kick` (or `kick`) so I can kick them."
+                    f"{cmd_text}\n(Note: I haven't seen {target_display} send a message recently to get their numeric ID—reply to one of their messages with `/{action}` so I can execute it directly!)"
                 )
             else:
                 await message.reply_text(
-                    "Reply to a user's message with `/kick` or type `/kick <name>` to kick them."
+                    f"Reply to a user's message with `/{action}` or type `/{action} @username`."
                 )
             return True
 
         if target_user_id == bot.id:
-            await message.reply_text("Apne aap ko kick nahi karunga bhai! 😂")
+            await message.reply_text(f"Apne aap pe /{action} nahi chalaunga bhai! 😂")
             return True
 
-        try:
-            target_member = await chat.get_member(target_user_id)
-            if target_member.status in {ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR}:
-                await message.reply_text(f"{target_display} is an admin—Telegram doesn't allow kicking other admins.")
-                return True
-        except TelegramError:
-            pass
+        if action in {"kick", "ban", "mute"}:
+            try:
+                target_member = await chat.get_member(target_user_id)
+                if target_member.status in {ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR}:
+                    await message.reply_text(f"{target_display} is an admin—Telegram doesn't allow running /{action} on other admins.")
+                    return True
+            except TelegramError:
+                pass
 
         try:
-            await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_user_id)
-            if not permanent_ban:
+            if action == "kick":
+                await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_user_id)
                 await context.bot.unban_chat_member(
                     chat_id=chat.id, user_id=target_user_id, only_if_banned=True
                 )
-            action_word = "Banned" if permanent_ban else "Kicked"
-            await message.reply_text(f"{action_word} {target_display} from the group. 🥾")
+                await message.reply_text(f"{cmd_text}\n✅ Kicked {target_display} from the group. 🥾")
+            elif action == "ban":
+                await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_user_id)
+                await message.reply_text(f"{cmd_text}\n🚫 Banned {target_display} from the group.")
+            elif action == "unban":
+                await context.bot.unban_chat_member(
+                    chat_id=chat.id, user_id=target_user_id, only_if_banned=False
+                )
+                await message.reply_text(f"{cmd_text}\n✅ Unbanned {target_display}.")
+            elif action == "mute":
+                mute_perms = ChatPermissions(can_send_messages=False)
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=target_user_id,
+                    permissions=mute_perms,
+                )
+                await message.reply_text(f"{cmd_text}\n🔇 Muted {target_display}.")
+            elif action == "unmute":
+                unmute_perms = ChatPermissions(
+                    can_send_messages=True,
+                    can_send_audios=True,
+                    can_send_documents=True,
+                    can_send_photos=True,
+                    can_send_videos=True,
+                    can_send_video_notes=True,
+                    can_send_voice_notes=True,
+                    can_send_polls=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                )
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=target_user_id,
+                    permissions=unmute_perms,
+                )
+                await message.reply_text(f"{cmd_text}\n🔊 Unmuted {target_display}.")
         except TelegramError as exc:
-            logger.warning("Failed to kick/ban user %s in chat %s: %s", target_user_id, chat.id, exc)
+            logger.warning("Failed to %s user %s in chat %s: %s", action, target_user_id, chat.id, exc)
             await message.reply_text(
-                f"Couldn't kick {target_display} ({exc.message if hasattr(exc, 'message') else exc}). Make sure I have the 'Ban Users' admin permission enabled!"
+                f"{cmd_text}\n⚠️ Couldn't {action} {target_display} ({exc.message if hasattr(exc, 'message') else exc}). Make sure I have 'Ban Users' / 'Restrict Members' admin permissions enabled!"
             )
         return True
 
@@ -317,6 +393,24 @@ class TelegramAIHandlers:
         settings = self.repository.get_settings(chat_id)
         bot = self._bot_user or await context.bot.get_me()
         self._bot_user = bot
+
+        # Index sender and replied-to user (@username and full_name) for moderation lookups
+        if isinstance(getattr(message.from_user, "id", None), int):
+            self.repository.upsert_known_user(
+                chat_id,
+                message.from_user.id,
+                getattr(message.from_user, "username", None),
+                getattr(message.from_user, "full_name", None),
+            )
+        if message.reply_to_message and getattr(message.reply_to_message, "from_user", None):
+            r_user = message.reply_to_message.from_user
+            if isinstance(getattr(r_user, "id", None), int) and not getattr(r_user, "is_bot", False):
+                self.repository.upsert_known_user(
+                    chat_id,
+                    r_user.id,
+                    getattr(r_user, "username", None),
+                    getattr(r_user, "full_name", None),
+                )
 
         # Index replied-to message if it exists
         self._record_parent_message_if_missing(chat_id, message.reply_to_message, bot)
@@ -377,19 +471,32 @@ class TelegramAIHandlers:
             return
 
         # -------------------------------------------------------------- #
-        # Check for Kick / Ban moderation request ("/kick Macman", etc.) #
+        # Check for Moderation requests (kick, ban, unban, mute, unmute) #
         # -------------------------------------------------------------- #
-        kick_match = _KICK_COMMAND_RE.match(prompt.strip())
-        if kick_match:
-            raw_target = (kick_match.group(1) or "").strip()
+        mod_match = _MODERATION_COMMAND_RE.match(prompt.strip())
+        if mod_match:
+            raw_action = (mod_match.group("action") or "").lower().strip()
+            raw_target = (mod_match.group("target") or "").strip()
             # Avoid false positives on general sentences like "kick off the meeting"
             if raw_target.lower() not in {"off", "start", "back", "it"}:
-                is_perm_ban = bool(re.match(r"^(?:type\s+|please\s+|pls\s+)?/?ban\b", prompt.strip(), re.IGNORECASE))
+                if raw_action.startswith(("kick", "nikal", "bhaga")):
+                    norm_action = "kick"
+                elif raw_action.startswith("unban"):
+                    norm_action = "unban"
+                elif raw_action.startswith("ban"):
+                    norm_action = "ban"
+                elif raw_action.startswith("unmute"):
+                    norm_action = "unmute"
+                elif raw_action.startswith(("mute", "chup")):
+                    norm_action = "mute"
+                else:
+                    norm_action = "kick"
+
                 target_arg = "" if raw_target.lower() in {"him", "her", "this", "them", "isko", "usko"} else raw_target
                 if self.repository and settings.memory_enabled:
                     self.repository.add_context(chat_id, current_msg)
-                await self._execute_kick_or_ban(
-                    update, context, target_name=target_arg, permanent_ban=is_perm_ban
+                await self._execute_moderation(
+                    update, context, action=norm_action, target_name=target_arg
                 )
                 return
 
@@ -596,6 +703,14 @@ class TelegramAIHandlers:
         settings = self.repository.get_settings(chat_id)
         bot = self._bot_user or await context.bot.get_me()
         self._bot_user = bot
+
+        if isinstance(getattr(message.from_user, "id", None), int):
+            self.repository.upsert_known_user(
+                chat_id,
+                message.from_user.id,
+                getattr(message.from_user, "username", None),
+                getattr(message.from_user, "full_name", None),
+            )
 
         self._record_parent_message_if_missing(chat_id, message.reply_to_message, bot)
 
@@ -1012,6 +1127,14 @@ class TelegramAIHandlers:
         p_r_id = parent_msg.reply_to_message.message_id if parent_msg.reply_to_message and isinstance(getattr(parent_msg.reply_to_message, "message_id", None), int) else None
         p_t_id = parent_msg.message_thread_id if isinstance(getattr(parent_msg, "message_thread_id", None), int) else None
 
+        if not is_bot and isinstance(sender_id, int):
+            self.repository.upsert_known_user(
+                chat_id,
+                sender_id,
+                getattr(parent_msg.from_user, "username", None) if parent_msg.from_user else None,
+                author,
+            )
+
         self.repository.add_context(
             chat_id,
             ConversationMessage(
@@ -1108,6 +1231,9 @@ def register_handlers(application: Application, handlers: TelegramAIHandlers) ->
     application.add_handler(CommandHandler("feedback", handlers.feedback))
     application.add_handler(CommandHandler("kick", handlers.kick))
     application.add_handler(CommandHandler("ban", handlers.ban))
+    application.add_handler(CommandHandler("unban", handlers.unban))
+    application.add_handler(CommandHandler("mute", handlers.mute))
+    application.add_handler(CommandHandler("unmute", handlers.unmute))
     application.add_handler(
         MessageHandler(filters.PHOTO | filters.Document.IMAGE, handlers.photo)
     )

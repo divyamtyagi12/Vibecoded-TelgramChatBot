@@ -91,7 +91,8 @@ _LIVE_KEYWORDS_RE = re.compile(
     r"tournament|on\s*going|ongoing|standings?|points?\s+table|leaderboard|qualifiers?|"
     r"ffws|free\s+fire|bgmi|bmps|bgis|pmgc|valorant|vct|esports|world\s+cup|world\s+series|"
     r"cricket|football|ipl|f1|weather|today|current\s+time|2025|2026|2027|"
-    r"news|latest|breaking|stock|stocks|share|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold|silver"
+    r"news|latest|breaking|stock|stocks|share|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold|silver|"
+    r"verify|fact[- ]?check|real\s+or\s+fake|is\s+this\s+true|rumou?r"
     r")\b",
     re.IGNORECASE,
 )

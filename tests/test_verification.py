@@ -739,6 +739,71 @@ class TestNaturalChatResponseBehavior(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(captured_tokens[-1], 2000)
 
 
+class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
+    def _make_handler(self):
+        from telegram_ai.storage import SQLiteRepository
+        from telegram_ai.groq import GroqClient
+        from telegram_ai.handlers import TelegramAIHandlers
+        repo = SQLiteRepository(":memory:")
+        ai = MagicMock(spec=GroqClient)
+        ai.answer = AsyncMock(return_value="AI reply")
+        handler = TelegramAIHandlers(repo, ai, max_context=5)
+        handler._bot_user = MagicMock(id=99, username="TestBot")
+        return handler, repo, ai
+
+    async def test_kick_by_name_from_history(self):
+        from telegram.constants import ChatMemberStatus
+        from telegram_ai.domain import ConversationMessage, GroupSettings, ParticipationMode
+        handler, repo, ai = self._make_handler()
+        chat_id = -777
+        repo.save_settings(GroupSettings(chat_id=chat_id, participation_mode=ParticipationMode.ALWAYS))
+        repo.add_context(chat_id, ConversationMessage(author="Macman", text="Hi", message_id=10, sender_id=555))
+
+        update = _make_update("Type /kick Macman", chat_id=chat_id, user_id=42)
+        admin_member = MagicMock(status=ChatMemberStatus.OWNER)
+        target_member = MagicMock(status=ChatMemberStatus.MEMBER)
+
+        async def fake_get_member(uid):
+            return admin_member if uid == 42 else target_member
+
+        update.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
+        bot = _make_bot()
+        bot.ban_chat_member = AsyncMock()
+        bot.unban_chat_member = AsyncMock()
+        ctx = _make_context(bot)
+
+        await handler.respond(update, ctx)
+        bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=555)
+        bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=555, only_if_banned=True)
+        update.effective_message.reply_text.assert_awaited_with("Kicked Macman from the group. 🥾")
+        ai.answer.assert_not_awaited()
+
+    async def test_kick_command_reply_to_user(self):
+        from telegram.constants import ChatMemberStatus
+        handler, repo, ai = self._make_handler()
+        chat_id = -778
+        target_msg = MagicMock()
+        target_msg.from_user = MagicMock(id=666, full_name="Macman", username="macman", is_bot=False)
+
+        update = _make_update("/kick", chat_id=chat_id, user_id=42, reply_to_message=target_msg)
+        admin_member = MagicMock(status=ChatMemberStatus.ADMINISTRATOR)
+        target_member = MagicMock(status=ChatMemberStatus.MEMBER)
+
+        async def fake_get_member(uid):
+            return admin_member if uid == 42 else target_member
+
+        update.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
+        bot = _make_bot()
+        bot.ban_chat_member = AsyncMock()
+        bot.unban_chat_member = AsyncMock()
+        ctx = _make_context(bot)
+
+        await handler.kick(update, ctx)
+        bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666)
+        bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666, only_if_banned=True)
+        update.effective_message.reply_text.assert_awaited_with("Kicked Macman from the group. 🥾")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

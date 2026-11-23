@@ -66,6 +66,15 @@ _UNRELATED_TOPIC_SWITCH_RE = re.compile(
 )
 
 
+_KICK_COMMAND_RE = re.compile(
+    r"^(?:type\s+|please\s+|pls\s+|chal\s+|bhai\s+|bot\s+)?"
+    r"(?:/kick|kick(?:\s+out)?|ban|nikal(?:\s+de)?|bhaga(?:\s+de)?)"
+    r"(?:\s+(?:to|out|user))?"
+    r"(?:\s+([@\w\s.-]{1,40}))?[!.]*$",
+    re.IGNORECASE,
+)
+
+
 class TelegramAIHandlers:
     def __init__(
         self,
@@ -90,6 +99,8 @@ class TelegramAIHandlers:
                 BotCommand("style", "Admin: set answer style"),
                 BotCommand("mode", "Admin: set participation mode"),
                 BotCommand("memory", "Admin: enable/disable context"),
+                BotCommand("kick", "Admin: kick a user (reply or /kick <name>)"),
+                BotCommand("ban", "Admin: ban a user (reply or /ban <name>)"),
             ]
         )
 
@@ -102,7 +113,7 @@ class TelegramAIHandlers:
             "Send or reply to a photo/screenshot with a question (code analysis, math, memes, anime, general questions) "
             "or ask for a visual rating.\n\n"
             "Everyone: /help, /info, /feedback 1-5 optional comment\n"
-            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off"
+            "Admins: /settings, /style <instruction>, /mode mention|reply|always|off, /memory on|off, /kick, /ban"
         )
 
     async def info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -194,6 +205,104 @@ class TelegramAIHandlers:
         )
         await message.reply_text("Thanks—your feedback has been recorded.")
 
+    async def kick(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to kick a member from the group (unbans immediately so they can rejoin if invited)."""
+        target_name = " ".join(context.args or []).strip()
+        await self._execute_kick_or_ban(update, context, target_name=target_name, permanent_ban=False)
+
+    async def ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to permanently ban a member from the group."""
+        target_name = " ".join(context.args or []).strip()
+        await self._execute_kick_or_ban(update, context, target_name=target_name, permanent_ban=True)
+
+    async def _execute_kick_or_ban(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        target_name: str = "",
+        permanent_ban: bool = False,
+    ) -> bool:
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return False
+        if chat.type == ChatType.PRIVATE:
+            await message.reply_text("Kick/ban only works in group chats.")
+            return True
+        if not await self._is_admin(update):
+            return True
+
+        bot = self._bot_user or await context.bot.get_me()
+        self._bot_user = bot
+
+        target_user_id: int | None = None
+        target_display: str = target_name.strip()
+
+        # 1. Check for text_mention entity (e.g. user tapped someone's name in Telegram)
+        for ent in (message.entities or []):
+            if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+                target_user_id = ent.user.id
+                target_display = ent.user.full_name or target_display
+                break
+
+        # 2. If no explicit target name provided (or replying directly to the target user's message)
+        if target_user_id is None and message.reply_to_message and message.reply_to_message.from_user:
+            replied_user = message.reply_to_message.from_user
+            if not target_display and replied_user.id != bot.id:
+                target_user_id = replied_user.id
+                target_display = replied_user.full_name or "User"
+            elif target_display and target_display.lower().lstrip("@") in (
+                (replied_user.full_name or "").lower(),
+                (replied_user.username or "").lower(),
+            ):
+                target_user_id = replied_user.id
+                target_display = replied_user.full_name or target_display
+
+        # 3. Look up target_name in recent chat history
+        if target_user_id is None and target_display:
+            found = self.repository.find_user_by_name(chat.id, target_display)
+            if found:
+                target_user_id, target_display = found
+
+        if target_user_id is None:
+            if target_display:
+                await message.reply_text(
+                    f"Couldn't find '{target_display}' in recent messages. Reply directly to their message with `/kick` (or `kick`) so I can kick them."
+                )
+            else:
+                await message.reply_text(
+                    "Reply to a user's message with `/kick` or type `/kick <name>` to kick them."
+                )
+            return True
+
+        if target_user_id == bot.id:
+            await message.reply_text("Apne aap ko kick nahi karunga bhai! 😂")
+            return True
+
+        try:
+            target_member = await chat.get_member(target_user_id)
+            if target_member.status in {ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR}:
+                await message.reply_text(f"{target_display} is an admin—Telegram doesn't allow kicking other admins.")
+                return True
+        except TelegramError:
+            pass
+
+        try:
+            await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_user_id)
+            if not permanent_ban:
+                await context.bot.unban_chat_member(
+                    chat_id=chat.id, user_id=target_user_id, only_if_banned=True
+                )
+            action_word = "Banned" if permanent_ban else "Kicked"
+            await message.reply_text(f"{action_word} {target_display} from the group. 🥾")
+        except TelegramError as exc:
+            logger.warning("Failed to kick/ban user %s in chat %s: %s", target_user_id, chat.id, exc)
+            await message.reply_text(
+                f"Couldn't kick {target_display} ({exc.message if hasattr(exc, 'message') else exc}). Make sure I have the 'Ban Users' admin permission enabled!"
+            )
+        return True
+
     # ------------------------------------------------------------------ #
     # Message Handlers                                                   #
     # ------------------------------------------------------------------ #
@@ -266,6 +375,23 @@ class TelegramAIHandlers:
         if not prompt_with_quote:
             await message.reply_text("What would you like help with?")
             return
+
+        # -------------------------------------------------------------- #
+        # Check for Kick / Ban moderation request ("/kick Macman", etc.) #
+        # -------------------------------------------------------------- #
+        kick_match = _KICK_COMMAND_RE.match(prompt.strip())
+        if kick_match:
+            raw_target = (kick_match.group(1) or "").strip()
+            # Avoid false positives on general sentences like "kick off the meeting"
+            if raw_target.lower() not in {"off", "start", "back", "it"}:
+                is_perm_ban = bool(re.match(r"^(?:type\s+|please\s+|pls\s+)?/?ban\b", prompt.strip(), re.IGNORECASE))
+                target_arg = "" if raw_target.lower() in {"him", "her", "this", "them", "isko", "usko"} else raw_target
+                if self.repository and settings.memory_enabled:
+                    self.repository.add_context(chat_id, current_msg)
+                await self._execute_kick_or_ban(
+                    update, context, target_name=target_arg, permanent_ban=is_perm_ban
+                )
+                return
 
         # -------------------------------------------------------------- #
         # Check for Contextual Retry ("Try", "Try again", "Retry")       #
@@ -980,6 +1106,8 @@ def register_handlers(application: Application, handlers: TelegramAIHandlers) ->
     application.add_handler(CommandHandler("mode", handlers.mode))
     application.add_handler(CommandHandler("memory", handlers.memory))
     application.add_handler(CommandHandler("feedback", handlers.feedback))
+    application.add_handler(CommandHandler("kick", handlers.kick))
+    application.add_handler(CommandHandler("ban", handlers.ban))
     application.add_handler(
         MessageHandler(filters.PHOTO | filters.Document.IMAGE, handlers.photo)
     )

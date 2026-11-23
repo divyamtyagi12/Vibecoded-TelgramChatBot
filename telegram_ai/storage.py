@@ -369,6 +369,31 @@ class SQLiteRepository:
             logger.warning("cleanup_old_messages: OperationalError during cleanup", exc_info=True)
             return 0
 
+    def find_user_by_name(self, chat_id: int, name_query: str) -> tuple[int, str] | None:
+        """Find a sender_id and author name in recent chat history matching name_query."""
+        clean = name_query.strip().lstrip("@").lower()
+        if not clean:
+            return None
+        rows = self.connection.execute(
+            """
+            SELECT sender_id, author FROM conversation_context
+            WHERE chat_id = ? AND sender_id IS NOT NULL AND is_bot = 0
+            ORDER BY id DESC LIMIT 200
+            """,
+            (int(chat_id),),
+        ).fetchall()
+        # Exact match first
+        for row in rows:
+            author = str(row["author"] or "")
+            if author.lower() == clean:
+                return int(row["sender_id"]), author
+        # Partial / prefix match next
+        for row in rows:
+            author = str(row["author"] or "")
+            if clean in author.lower():
+                return int(row["sender_id"]), author
+        return None
+
     def add_feedback(self, chat_id: int, user_id: int, rating: int, comment: str) -> None:
         self.connection.execute(
             "INSERT INTO feedback (chat_id, user_id, rating, comment) VALUES (?, ?, ?, ?)",

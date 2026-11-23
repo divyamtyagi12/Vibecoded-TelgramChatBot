@@ -262,6 +262,67 @@ class TelegramAIHandlers:
         target_name = self._request_text(" ".join(context.args or []), getattr(bot, "username", None))
         await self._execute_moderation(update, context, action="unmute", target_name=target_name)
 
+    async def _resolve_username_via_mtproto(
+        self,
+        chat_id: int,
+        target_query: str,
+        bot_token: str | None,
+    ) -> tuple[int, str] | None:
+        """Resolve any Telegram @username or group member name directly via Telethon MTProto."""
+        clean = target_query.strip().lstrip("@")
+        if not clean or not bot_token:
+            return None
+        try:
+            # pyrefly: ignore[missing-import]
+            from telethon import TelegramClient
+            # pyrefly: ignore[missing-import]
+            from telethon.sessions import MemorySession
+        except ImportError:
+            return None
+
+        client = TelegramClient(MemorySession(), 6, "eb06d4abfb49dc3eeb1aeb98ae0f581e")
+        try:
+            await client.start(bot_token=bot_token)
+            # 1. Try direct @username lookup via contacts.ResolveUsername
+            if re.match(r"^[A-Za-z0-9_]{3,32}$", clean):
+                try:
+                    ent = await client.get_entity(clean)
+                    uid = getattr(ent, "id", None)
+                    if isinstance(uid, int):
+                        uname = getattr(ent, "username", None)
+                        fname = " ".join(
+                            filter(None, [getattr(ent, "first_name", None), getattr(ent, "last_name", None)])
+                        ).strip()
+                        self.repository.upsert_known_user(chat_id, uid, uname, fname or clean)
+                        display = f"@{uname}" if uname else (fname or target_query)
+                        return uid, display
+                except Exception:
+                    pass
+
+            # 2. Search group participants by name/username query
+            try:
+                participants = await client.get_participants(chat_id, search=clean, limit=10)
+                for p in participants:
+                    uid = getattr(p, "id", None)
+                    if isinstance(uid, int):
+                        uname = getattr(p, "username", None)
+                        fname = " ".join(
+                            filter(None, [getattr(p, "first_name", None), getattr(p, "last_name", None)])
+                        ).strip()
+                        self.repository.upsert_known_user(chat_id, uid, uname, fname)
+                        display = f"@{uname}" if uname else (fname or target_query)
+                        return uid, display
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("MTProto username resolution failed for %r: %s", target_query, exc)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        return None
+
     async def _execute_moderation(
         self,
         update: Update,
@@ -347,6 +408,15 @@ class TelegramAIHandlers:
                     target_user_id, matched_label = found
                     if not target_display.startswith("@"):
                         target_display = matched_label
+
+        # 5. Live MTProto resolution for any @username or member name in the group
+        if target_user_id is None and target_display:
+            bot_token = getattr(context.bot, "token", None)
+            resolved = await self._resolve_username_via_mtproto(chat.id, target_display, bot_token)
+            if resolved:
+                target_user_id, resolved_display = resolved
+                if not target_display.startswith("@"):
+                    target_display = resolved_display
 
         cmd_text = f"/{action} {target_display}".strip()
 

@@ -90,7 +90,8 @@ _LIVE_KEYWORDS_RE = re.compile(
     r"schedule|fixture|series|ind\s+vs|ind\s+nz|who\s+won|winner|champion|finals?|semi[- ]?finals?|"
     r"tournament|on\s*going|ongoing|standings?|points?\s+table|leaderboard|qualifiers?|"
     r"ffws|free\s+fire|bgmi|bmps|bgis|pmgc|valorant|vct|esports|world\s+cup|world\s+series|"
-    r"cricket|football|ipl|f1|weather|today|current\s+time|2025|2026|2027"
+    r"cricket|football|ipl|f1|weather|today|current\s+time|2025|2026|2027|"
+    r"news|latest|breaking|stock|stocks|share|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold|silver"
     r")\b",
     re.IGNORECASE,
 )
@@ -244,8 +245,8 @@ class GroqClient:
             "You: [Provide a comprehensive, properly structured, detailed explanation because the user explicitly asked]\n\n"
             "LIVE & REAL-TIME SEARCH:\n"
             "- You have access to real-time tools: `web_search` and `fetch_webpage`.\n"
-            "- ALWAYS call `web_search` BEFORE answering whenever the user asks about ANY tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, latest news, or 2025/2026 events.\n"
-            "- NEVER say 'Mujhe confirm info nahi hai', 'Tournament ka naam aur saal batao', 'main search karke bata deta hoon', or ask the user for information you can search yourself! Just call `web_search` immediately using the tournament/topic from the current message + recent conversation context.\n"
+            "- ALWAYS call `web_search` IMMEDIATELY BEFORE answering whenever the user asks about ANY news, stock/crypto prices (e.g. Nvidia/NVDA, Apple, Bitcoin, Nifty), tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, or 2025/2026 events.\n"
+            "- NEVER ask 'Want me to pull the latest live price?' or 'Mujhe confirm info nahi hai' or 'main search karke bata deta hoon'—just call `web_search` right away on the first turn and give the live facts/price directly!\n"
             "- When a user replies with a short clarification like '2026', 'Ffws global finals', 'On going tournament', or 'Ind nz', combine their reply with the previous messages in the conversation to form a complete search query (e.g. 'FFWS Global Finals 2026 ongoing tournament finalists standings') and call `web_search` immediately!\n"
             "- Train running status format (2-3 lines max): train name/number, current location/delay, next station.\n"
             "- Live score format (1-2 lines max): teams, score, match state.\n"
@@ -769,6 +770,10 @@ class GroqClient:
             "abhi hua nahi hai",
             "kaunsa game ka tournament",
             "kaunsa tournament",
+            "want me to pull the latest",
+            "couldn't fetch a live",
+            "try checking yahoo finance",
+            "google finance",
         )
         return any(p in low for p in phrases)
 

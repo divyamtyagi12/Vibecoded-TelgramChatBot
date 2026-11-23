@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from lxml import html
 
@@ -30,8 +32,41 @@ _HEADERS = {
 }
 
 
+_FINANCE_QUERY_RE = re.compile(
+    r"\b(stock|stocks|share|shares|price|quote|market|nasdaq|nyse|nifty|sensex|ticker|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|aapl|tsla|msft|googl|amzn|meta)\b",
+    re.IGNORECASE,
+)
+
+_NEWS_QUERY_RE = re.compile(
+    r"\b(news|latest|breaking|today|update|updates|happening|recent|headline|headlines|stock|stocks)\b",
+    re.IGNORECASE,
+)
+
+_FINANCE_STOPWORDS = {
+    "stock", "stocks", "share", "shares", "price", "prices", "live", "quote", "quotes",
+    "today", "news", "latest", "current", "any", "on", "of", "the", "what", "is", "whats",
+    "for", "in", "november", "december", "january", "february", "march", "april", "may",
+    "june", "july", "august", "september", "october", "2025", "2026", "2027", "check",
+    "pull", "get", "me", "about", "update", "updates", "market", "value", "how", "much",
+}
+
+_COMMON_TICKER_FIXES = {
+    "nvidi": "nvidia",
+    "nvidea": "nvidia",
+    "aple": "apple",
+    "tsla": "TSLA",
+    "nvda": "NVDA",
+    "btc": "BTC-USD",
+    "bitcoin": "BTC-USD",
+    "eth": "ETH-USD",
+    "ethereum": "ETH-USD",
+    "nifty": "^NSEI",
+    "sensex": "^BSESN",
+}
+
+
 class WebSearchClient:
-    """Client for real-time web search via DuckDuckGo Lite and direct webpage inspection."""
+    """Client for real-time web search with datacenter-safe fallbacks (Bing RSS, Google News RSS, Yahoo Finance)."""
 
     def __init__(self, timeout_seconds: float = 6.0) -> None:
         self.timeout_seconds = timeout_seconds
@@ -43,17 +78,46 @@ class WebSearchClient:
             return "No search query provided."
 
         logger.info("Executing web search for: %r", clean_query)
-        html_text = await self._post_search(clean_query)
-        if not html_text:
+
+        sections: list[str] = []
+
+        # 1. If this looks like a stock/crypto/price query, fetch live Yahoo Finance quote + news
+        if _FINANCE_QUERY_RE.search(clean_query):
+            finance_info = await self._search_yahoo_finance(clean_query)
+            if finance_info:
+                sections.append(finance_info)
+
+        # 2. Primary web search: DuckDuckGo Lite
+        ddg_results = await self._search_ddg(clean_query, max_results=max_results)
+        if ddg_results:
+            sections.append(ddg_results)
+        else:
+            # 3. Datacenter-safe web fallback (DDG returns 202 Accepted on Vercel/AWS IPs): Bing RSS
+            bing_results = await self._search_bing_rss(clean_query, max_results=max_results)
+            if bing_results:
+                sections.append(bing_results)
+
+        # 4. If it's a news/latest query or we still have no results, fetch Google News RSS
+        if _NEWS_QUERY_RE.search(clean_query) or not sections:
+            gnews_results = await self._search_google_news_rss(clean_query, max_results=min(max_results, 4))
+            if gnews_results:
+                sections.append(gnews_results)
+
+        if not sections:
             return f"No results found or search failed for: {clean_query}"
 
+        return "\n\n".join(sections)
+
+    async def _search_ddg(self, clean_query: str, max_results: int = 5) -> str | None:
+        html_text = await self._post_search(clean_query)
+        if not html_text:
+            return None
         try:
             tree = html.fromstring(html_text)
             links = tree.xpath('//a[contains(@class, "result-link")]')
             snippets = tree.xpath('//td[contains(@class, "result-snippet")]')
-
             if not links:
-                return f"No search results returned for query: {clean_query}"
+                return None
 
             formatted: list[str] = []
             for idx, (a, s) in enumerate(zip(links[:max_results], snippets[:max_results]), start=1):
@@ -63,11 +127,124 @@ class WebSearchClient:
                 if len(snippet) > 300:
                     snippet = snippet[:297] + "..."
                 formatted.append(f"[{idx}] {title}\nURL: {url}\nSnippet: {snippet}")
-
-            return "\n\n".join(formatted)
+            return "\n\n".join(formatted) if formatted else None
         except Exception as exc:
-            logger.warning("Failed to parse search HTML: %s", exc)
-            return f"Error parsing search results for query: {clean_query}"
+            logger.warning("Failed to parse DDG search HTML: %s", exc)
+            return None
+
+    async def _search_bing_rss(self, clean_query: str, max_results: int = 5) -> str | None:
+        """Fetch Bing search results via RSS (works reliably from Vercel/AWS datacenter IPs)."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
+                res = await client.get(
+                    "https://www.bing.com/search",
+                    params={"q": clean_query, "format": "rss"},
+                    headers=_HEADERS,
+                )
+            if res.status_code != 200 or not res.text:
+                return None
+            root = ET.fromstring(res.text)
+            items = root.findall(".//item")
+            if not items:
+                return None
+            formatted: list[str] = []
+            for idx, item in enumerate(items[:max_results], start=1):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                desc = (item.findtext("description") or "").strip()
+                if len(desc) > 300:
+                    desc = desc[:297] + "..."
+                formatted.append(f"[{idx}] {title}\nURL: {link}\nSnippet: {desc}")
+            return "\n\n".join(formatted) if formatted else None
+        except Exception as exc:
+            logger.warning("Bing RSS search failed for %r: %s", clean_query, exc)
+            return None
+
+    async def _search_google_news_rss(self, clean_query: str, max_results: int = 4) -> str | None:
+        """Fetch real-time news headlines via Google News RSS."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
+                res = await client.get(
+                    "https://news.google.com/rss/search",
+                    params={"q": clean_query, "hl": "en-US", "gl": "US", "ceid": "US:en"},
+                    headers=_HEADERS,
+                )
+            if res.status_code != 200 or not res.text:
+                return None
+            root = ET.fromstring(res.text)
+            items = root.findall(".//item")
+            if not items:
+                return None
+            lines: list[str] = ["Latest News Headlines:"]
+            for idx, item in enumerate(items[:max_results], start=1):
+                title = (item.findtext("title") or "").strip()
+                pub_date = (item.findtext("pubDate") or "").strip()
+                lines.append(f"- {title} ({pub_date})" if pub_date else f"- {title}")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("Google News RSS failed for %r: %s", clean_query, exc)
+            return None
+
+    async def _search_yahoo_finance(self, clean_query: str) -> str | None:
+        """Fetch live stock/crypto quote and headlines from Yahoo Finance."""
+        words = re.findall(r"[A-Za-z0-9.\-^]+", clean_query)
+        candidates = [
+            _COMMON_TICKER_FIXES.get(w.lower(), w)
+            for w in words
+            if w.lower() not in _FINANCE_STOPWORDS and len(w) >= 2
+        ]
+        if not candidates:
+            return None
+        search_term = " ".join(candidates[:3])
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
+                search_res = await client.get(
+                    "https://query1.finance.yahoo.com/v1/finance/search",
+                    params={"q": search_term, "quotesCount": 2, "newsCount": 3},
+                    headers=_HEADERS,
+                )
+                if search_res.status_code != 200:
+                    return None
+                data = search_res.json()
+                quotes = data.get("quotes") or []
+                news = data.get("news") or []
+
+                out_lines: list[str] = []
+                if quotes:
+                    symbol = quotes[0].get("symbol")
+                    shortname = quotes[0].get("shortname") or quotes[0].get("longname") or symbol
+                    if symbol:
+                        chart_res = await client.get(
+                            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                            params={"interval": "1d", "range": "1d"},
+                            headers=_HEADERS,
+                        )
+                        if chart_res.status_code == 200:
+                            chart_data = chart_res.json()
+                            meta = (chart_data.get("chart", {}).get("result") or [{}])[0].get("meta", {})
+                            price = meta.get("regularMarketPrice")
+                            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+                            currency = meta.get("currency", "USD")
+                            if price is not None:
+                                change_str = ""
+                                if prev:
+                                    diff = price - prev
+                                    pct = (diff / prev) * 100
+                                    sign = "+" if diff >= 0 else ""
+                                    change_str = f" ({sign}{diff:.2f} / {sign}{pct:.2f}% vs prev close {prev:.2f})"
+                                out_lines.append(
+                                    f"Live Market Quote: {shortname} ({symbol}) = {price:.2f} {currency}{change_str}"
+                                )
+                if news:
+                    out_lines.append("Recent Finance News:")
+                    for item in news[:3]:
+                        title = (item.get("title") or "").strip()
+                        if title:
+                            out_lines.append(f"- {title}")
+                return "\n".join(out_lines) if out_lines else None
+        except Exception as exc:
+            logger.debug("Yahoo Finance lookup failed for %r: %s", search_term, exc)
+            return None
 
     async def fetch_page(self, url: str, max_chars: int = 2500) -> str:
         """Fetch and extract readable text from a URL for deep details."""

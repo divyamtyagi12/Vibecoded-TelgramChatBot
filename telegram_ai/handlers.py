@@ -291,7 +291,24 @@ class TelegramAIHandlers:
                     else (replied_user.full_name or target_display)
                 )
 
-        # 3. Look up target_name (@username or display name) in known_users and recent chat history
+        # 3. Check chat administrators list if not found yet (useful if target is a bot or admin in the group)
+        if target_user_id is None and target_display:
+            clean_target = target_display.strip().lstrip("@").lower()
+            try:
+                admins = await chat.get_administrators()
+                for adm in admins:
+                    u = getattr(adm, "user", None)
+                    if not u:
+                        continue
+                    uname = (getattr(u, "username", None) or "").lower()
+                    fname = (getattr(u, "full_name", None) or "").lower()
+                    if (uname and uname == clean_target) or (fname and fname == clean_target):
+                        target_user_id = u.id
+                        break
+            except Exception:
+                pass
+
+        # 4. Look up target_name (@username or display name) in known_users and recent chat history
         if target_user_id is None and target_display:
             if target_display.lstrip("@").isdigit():
                 target_user_id = int(target_display.lstrip("@"))
@@ -305,12 +322,10 @@ class TelegramAIHandlers:
         cmd_text = f"/{action} {target_display}".strip()
 
         if target_user_id is None:
-            # Output the requested slash command (so any external admin bot like Rose can also see it)
-            # and inform the admin if we don't have the user's numeric ID cached yet.
+            # Output ONLY the requested slash command (e.g. "/kick @username") so any external admin bot
+            # in the group can also pick it up cleanly without extra error notes.
             if target_display:
-                await message.reply_text(
-                    f"{cmd_text}\n(Note: I haven't seen {target_display} send a message recently to get their numeric ID—reply to one of their messages with `/{action}` so I can execute it directly!)"
-                )
+                await message.reply_text(cmd_text)
             else:
                 await message.reply_text(
                     f"Reply to a user's message with `/{action}` or type `/{action} @username`."
@@ -336,15 +351,15 @@ class TelegramAIHandlers:
                 await context.bot.unban_chat_member(
                     chat_id=chat.id, user_id=target_user_id, only_if_banned=True
                 )
-                await message.reply_text(f"{cmd_text}\n✅ Kicked {target_display} from the group. 🥾")
+                await message.reply_text(cmd_text)
             elif action == "ban":
                 await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_user_id)
-                await message.reply_text(f"{cmd_text}\n🚫 Banned {target_display} from the group.")
+                await message.reply_text(cmd_text)
             elif action == "unban":
                 await context.bot.unban_chat_member(
                     chat_id=chat.id, user_id=target_user_id, only_if_banned=False
                 )
-                await message.reply_text(f"{cmd_text}\n✅ Unbanned {target_display}.")
+                await message.reply_text(cmd_text)
             elif action == "mute":
                 mute_perms = ChatPermissions(can_send_messages=False)
                 await context.bot.restrict_chat_member(
@@ -352,7 +367,7 @@ class TelegramAIHandlers:
                     user_id=target_user_id,
                     permissions=mute_perms,
                 )
-                await message.reply_text(f"{cmd_text}\n🔇 Muted {target_display}.")
+                await message.reply_text(cmd_text)
             elif action == "unmute":
                 unmute_perms = ChatPermissions(
                     can_send_messages=True,
@@ -371,12 +386,10 @@ class TelegramAIHandlers:
                     user_id=target_user_id,
                     permissions=unmute_perms,
                 )
-                await message.reply_text(f"{cmd_text}\n🔊 Unmuted {target_display}.")
+                await message.reply_text(cmd_text)
         except TelegramError as exc:
             logger.warning("Failed to %s user %s in chat %s: %s", action, target_user_id, chat.id, exc)
-            await message.reply_text(
-                f"{cmd_text}\n⚠️ Couldn't {action} {target_display} ({exc.message if hasattr(exc, 'message') else exc}). Make sure I have 'Ban Users' / 'Restrict Members' admin permissions enabled!"
-            )
+            await message.reply_text(cmd_text)
         return True
 
     # ------------------------------------------------------------------ #
@@ -1220,7 +1233,40 @@ class TelegramAIHandlers:
         )
 
 
+    async def track_member_activity(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Passively record any user or bot joining, leaving, or interacting in the group."""
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return
+        users_to_track = []
+        if getattr(message, "from_user", None):
+            users_to_track.append(message.from_user)
+        for u in (getattr(message, "new_chat_members", None) or []):
+            users_to_track.append(u)
+        if getattr(message, "left_chat_member", None):
+            users_to_track.append(message.left_chat_member)
+        if message.reply_to_message and getattr(message.reply_to_message, "from_user", None):
+            users_to_track.append(message.reply_to_message.from_user)
+        for ent in (message.entities or []):
+            if getattr(ent, "user", None):
+                users_to_track.append(ent.user)
+        for u in users_to_track:
+            uid = getattr(u, "id", None)
+            if isinstance(uid, int):
+                self.repository.upsert_known_user(
+                    chat.id,
+                    uid,
+                    getattr(u, "username", None),
+                    getattr(u, "full_name", None),
+                )
+
+
 def register_handlers(application: Application, handlers: TelegramAIHandlers) -> None:
+    application.add_handler(
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, handlers.track_member_activity),
+        group=-1,
+    )
     application.add_handler(CommandHandler("help", handlers.help))
     application.add_handler(CommandHandler("start", handlers.help))
     application.add_handler(CommandHandler("info", handlers.info))

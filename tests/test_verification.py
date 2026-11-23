@@ -775,7 +775,7 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         await handler.respond(update, ctx)
         bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=555)
         bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=555, only_if_banned=True)
-        update.effective_message.reply_text.assert_awaited_with("/kick Macman\n✅ Kicked Macman from the group. 🥾")
+        update.effective_message.reply_text.assert_awaited_with("/kick Macman")
         ai.answer.assert_not_awaited()
 
     async def test_kick_command_reply_to_user(self):
@@ -801,7 +801,7 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         await handler.kick(update, ctx)
         bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666)
         bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=666, only_if_banned=True)
-        update.effective_message.reply_text.assert_awaited_with("/kick @macman\n✅ Kicked @macman from the group. 🥾")
+        update.effective_message.reply_text.assert_awaited_with("/kick @macman")
 
     async def test_mute_unmute_ban_unban_by_username(self):
         from telegram.constants import ChatMemberStatus
@@ -828,7 +828,7 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         u_mute.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
         await handler.respond(u_mute, ctx)
         bot.restrict_chat_member.assert_awaited_once()
-        u_mute.effective_message.reply_text.assert_awaited_with("/mute @rahul_123\n🔇 Muted @rahul_123.")
+        u_mute.effective_message.reply_text.assert_awaited_with("/mute @rahul_123")
 
         # 2. "unmute @rahul_123"
         bot.restrict_chat_member.reset_mock()
@@ -836,21 +836,21 @@ class TestKickAndBanHandlers(unittest.IsolatedAsyncioTestCase):
         u_unmute.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
         await handler.respond(u_unmute, ctx)
         bot.restrict_chat_member.assert_awaited_once()
-        u_unmute.effective_message.reply_text.assert_awaited_with("/unmute @rahul_123\n🔊 Unmuted @rahul_123.")
+        u_unmute.effective_message.reply_text.assert_awaited_with("/unmute @rahul_123")
 
         # 3. "ban @rahul_123"
         u_ban = _make_update("ban @rahul_123", chat_id=chat_id, user_id=42)
         u_ban.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
         await handler.respond(u_ban, ctx)
         bot.ban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=777)
-        u_ban.effective_message.reply_text.assert_awaited_with("/ban @rahul_123\n🚫 Banned @rahul_123 from the group.")
+        u_ban.effective_message.reply_text.assert_awaited_with("/ban @rahul_123")
 
         # 4. "unban @rahul_123"
         u_unban = _make_update("unban @rahul_123", chat_id=chat_id, user_id=42)
         u_unban.effective_chat.get_member = AsyncMock(side_effect=fake_get_member)
         await handler.respond(u_unban, ctx)
         bot.unban_chat_member.assert_awaited_once_with(chat_id=chat_id, user_id=777, only_if_banned=False)
-        u_unban.effective_message.reply_text.assert_awaited_with("/unban @rahul_123\n✅ Unbanned @rahul_123.")
+        u_unban.effective_message.reply_text.assert_awaited_with("/unban @rahul_123")
 
 
 if __name__ == "__main__":

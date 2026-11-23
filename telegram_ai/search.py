@@ -65,6 +65,72 @@ _COMMON_TICKER_FIXES = {
 }
 
 
+_AGGREGATOR_DOMAINS = (
+    "news.google.com",
+    "bing.com",
+    "duckduckgo.com",
+    "facebook.com",
+    "instagram.com",
+    "pinterest.com",
+    "quora.com",
+    "reddit.com",
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+)
+
+_OFFICIAL_HINTS = (
+    ".gov",
+    ".edu",
+    ".org",
+    "docs.",
+    "official",
+    "reuters.com",
+    "cnbc.com",
+    "bbc.com",
+    "apnews.com",
+    "bloomberg.com",
+    "espncricinfo.com",
+    "cricbuzz.com",
+    "icc-cricket.com",
+    "bcci.tv",
+    "liquipedia.net",
+    "wikipedia.org",
+    "nvidia.com",
+    "apple.com",
+    "microsoft.com",
+    "google.com",
+    "openai.com",
+    "irctc.co.in",
+)
+
+
+def extract_official_urls(search_text: str, max_urls: int = 2) -> list[str]:
+    """Extract and prioritize official/authoritative webpage URLs from search output."""
+    if not search_text:
+        return []
+    raw_urls = re.findall(r"URL:\s*(https?://[^\s]+)", search_text)
+    seen: set[str] = set()
+    scored: list[tuple[int, str]] = []
+    for url in raw_urls:
+        clean = url.rstrip(").,;\"'")
+        low = clean.lower()
+        if clean in seen:
+            continue
+        seen.add(clean)
+        if any(agg in low for agg in _AGGREGATOR_DOMAINS):
+            continue
+        score = 0
+        if any(hint in low for hint in _OFFICIAL_HINTS):
+            score += 10
+        # Prefer shorter / root or direct official article paths over deep tracking URLs
+        if len(clean) < 90:
+            score += 2
+        scored.append((score, clean))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [u for _, u in scored[:max_urls]]
+
+
 class WebSearchClient:
     """Client for real-time web search with datacenter-safe fallbacks (Bing RSS, Google News RSS, Yahoo Finance)."""
 

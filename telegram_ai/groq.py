@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from telegram_ai.domain import ConversationMessage, GroupSettings
-from telegram_ai.search import WebSearchClient
+from telegram_ai.search import WebSearchClient, extract_official_urls
 from telegram_ai.vision import validate_and_process_image
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,24 @@ _DETAILED_KEYWORDS_RE = re.compile(
 
 _REFERENTIAL_REPLY_RE = re.compile(
     r"\b(means?|matlab|explain|true|false|why|kyu|kya|what|who|kaun|really|sahi|galat|translate|context|elaborate|how|kaise)\b",
+    re.IGNORECASE,
+)
+
+
+_CASUAL_ONLY_RE = re.compile(
+    r"^(?:hi|hey|hello|yo|sup|ok|okay|k|kk|haan|ha|yes|no|nah|nope|lol|lmao|rofl|haha+|hehe+|"
+    r"thanks?|thx|ty|nice|cool|good|great|bro|bhai|bruh|wtf|fku|bc|mc|lodu|bsdk|chup|bye|gn|gm|"
+    r"ha\s+vhi\s*\w*|thik\s+hai|sahi\s+hai|accha|achha|hm+)[!.,?\s]*$",
+    re.IGNORECASE,
+)
+
+_FACTUAL_QUESTION_RE = re.compile(
+    r"(\?|\b("
+    r"who|what|when|where|why|which|how\s+(?:much|many|old|far|long|does|do|is|are|did|to)|"
+    r"tell\s+me|check|find|search|official|website|site|release|launch|date|specs?|features?|"
+    r"price|cost|salary|ceo|founder|owner|headquarters|version|download|requirements?|eligible|"
+    r"eligibility|rules?|policy|syllabus|exam|result|results|cutoff|ranking|rank|winner|record"
+    r")\b)",
     re.IGNORECASE,
 )
 
@@ -244,11 +262,11 @@ class GroqClient:
             "You: Bhai apni fantasies mere pe mat thop, Rahul se khud hi baat chala le sharma mat! 💀😂\n\n"
             "User: Explain machine learning in detail.\n"
             "You: [Provide a comprehensive, properly structured, detailed explanation because the user explicitly asked]\n\n"
-            "LIVE & REAL-TIME SEARCH (MULTI-SOURCE VERIFICATION):\n"
+            "LIVE & REAL-TIME SEARCH (OFFICIAL WEBSITE & MULTI-SOURCE VERIFICATION):\n"
             "- You have access to real-time tools: `web_search` and `fetch_webpage`.\n"
-            "- ALWAYS call `web_search` IMMEDIATELY BEFORE answering whenever the user asks about ANY news, fact-check/verification, stock/crypto prices (e.g. Nvidia/NVDA, Apple, Bitcoin, Nifty), tournament, esports event (FFWS, Free Fire World Series, BGMI, PMGC, VCT, etc.), sports match (who will win, finalists, standings, predictions, venue, home/away, next match, schedule, live scores), live train status, timings, weather, or 2025/2026 events.\n"
-            "- MULTI-SOURCE VERIFICATION: `web_search` returns results from multiple independent sources (Yahoo Finance, Google News, Bing, DuckDuckGo). ALWAYS cross-verify claims across multiple sources before answering. If multiple credible outlets confirm it, state the verified facts clearly and briefly mention 1-2 source names (e.g. 'Confirmed by CNBC and Barron's...'). If sources conflict or no credible outlet confirms a rumor, explicitly say it is unverified or conflicting rather than guessing.\n"
-            "- NEVER ask 'Want me to pull the latest live price?' or 'Mujhe confirm info nahi hai' or 'main search karke bata deta hoon'—just call `web_search` right away on the first turn and give the verified facts/price directly!\n"
+            "- ALWAYS call `web_search` (and `fetch_webpage` on the official website when available) BEFORE answering ANY factual question, news, fact-check/verification, stock/crypto price, product/company/exam/policy query, tournament, esports event, sports match, live train status, timing, or weather.\n"
+            "- OFFICIAL WEBSITE & MULTI-SOURCE VERIFICATION: Prioritize official websites (.gov, .edu, .org, official company/product/sports sites) and cross-verify across multiple independent sources (Yahoo Finance, Google News, Bing, DuckDuckGo) before answering. Briefly cite the official website or 1-2 confirming sources naturally (e.g. 'According to NVIDIA's official site / CNBC...'). If sources conflict or a claim is unverified, explicitly say so.\n"
+            "- NEVER ask 'Want me to pull the latest live price?' or 'Mujhe confirm info nahi hai' or 'main search karke bata deta hoon'—just call `web_search` right away on the first turn and give the verified answer directly!\n"
             "- When a user replies with a short clarification like '2026', 'Ffws global finals', 'On going tournament', or 'Ind nz', combine their reply with the previous messages in the conversation to form a complete search query (e.g. 'FFWS Global Finals 2026 ongoing tournament finalists standings') and call `web_search` immediately!\n"
             "- Train running status format (2-3 lines max): train name/number, current location/delay, next station.\n"
             "- Live score format (1-2 lines max): teams, score, match state.\n"
@@ -301,11 +319,25 @@ class GroqClient:
         combined_context_text = " ".join(
             [m.text for m in context[-3:] if m.text and not m.is_bot and m.author != "TelegramAI"] + [prompt]
         ).strip()
+        is_referential_chat_reply = bool(
+            context
+            and len(prompt.split()) <= 6
+            and not prompt.startswith("[")
+            and _REFERENTIAL_REPLY_RE.search(prompt)
+            and not _LIVE_KEYWORDS_RE.search(prompt)
+        )
+        is_casual_only = bool(_CASUAL_ONLY_RE.match(prompt.strip()))
         is_live_query = bool(_LIVE_KEYWORDS_RE.search(prompt) or _LIVE_KEYWORDS_RE.search(combined_context_text))
+        needs_official_verification = (
+            not is_casual_only
+            and not is_code
+            and not is_referential_chat_reply
+            and (is_live_query or bool(_FACTUAL_QUESTION_RE.search(prompt)))
+        )
 
-        # Run tool-execution loop (up to 2 tool rounds)
+        # Run tool-execution loop (up to 3 tool rounds so model can search + inspect official websites)
         tool_used = False
-        for step in range(2):
+        for step in range(3):
             msg = await self._chat_completion(
                 messages,
                 tools=_TOOLS,
@@ -317,10 +349,9 @@ class GroqClient:
             if not tool_calls:
                 answer_text = (msg.get("content") or "").strip()
                 if answer_text:
-                    # If this is a live/real-time query (stocks, news, scores, tournaments, weather, etc.)
-                    # and the model skipped web_search (risking stale/hallucinated data), force fallback search.
-                    if not tool_used and is_live_query:
-                        logger.info("Model answered live query without web_search; executing proactive search")
+                    # If this is a factual/live query and the model skipped web_search, force official-website + multi-source verification.
+                    if not tool_used and needs_official_verification:
+                        logger.info("Model answered factual/live query without web_search; executing official-source verification")
                         break
                     # Check if the model gave a false negative / refusal / "main search karke bata deta hoon" without actually searching
                     if self._is_refusal_or_unaware(answer_text):
@@ -385,17 +416,39 @@ class GroqClient:
                     "content": tool_result,
                 })
 
-        # If a live query was asked (or model claimed it didn't have info) and tools were not triggered, do a proactive fallback search
-        if not tool_used and (is_live_query or self._is_refusal_or_unaware((msg.get("content") or "") if isinstance(msg, dict) else "")):
+        # If a factual/live query was asked (or model claimed it didn't have info) and tools were not triggered,
+        # run multi-source search AND fetch the top official/authoritative webpage(s) directly.
+        if not tool_used and (
+            needs_official_verification
+            or self._is_refusal_or_unaware((msg.get("content") or "") if isinstance(msg, dict) else "")
+        ):
             search_query = combined_context_text if len(prompt.split()) <= 5 and combined_context_text else prompt
-            logger.info("Executing proactive live search for: %r", search_query)
+            logger.info("Executing proactive official-source search for: %r", search_query)
             search_data = await self.search_client.search(search_query, max_results=4)
+
+            official_sections: list[str] = []
+            official_urls = extract_official_urls(search_data, max_urls=2)
+            if official_urls:
+                logger.info("Fetching official/authoritative page(s): %s", official_urls)
+                page_texts = await asyncio.gather(
+                    *(self.search_client.fetch_page(u, max_chars=1800) for u in official_urls),
+                    return_exceptions=True,
+                )
+                for u, pt in zip(official_urls, page_texts):
+                    if isinstance(pt, str) and pt and not pt.startswith(("Could not retrieve", "Error retrieving", "Invalid URL", "Page contains no")):
+                        official_sections.append(f"=== Official/Source Webpage ({u}) ===\n{pt}")
+
+            combined_evidence = search_data
+            if official_sections:
+                combined_evidence = f"{search_data}\n\n" + "\n\n".join(official_sections)
+
             messages.append({
                 "role": "user",
                 "content": (
-                    f"Here is real-time information retrieved from multiple sources for this query ({search_query}):\n\n{search_data}\n\n"
-                    "Cross-verify the facts across these sources and provide a direct, accurate, concise answer (1-3 sentences max), "
-                    "briefly citing 1-2 confirming sources where helpful. "
+                    f"Here is verified real-time information retrieved from official websites and multiple sources for this query ({search_query}):\n\n"
+                    f"{combined_evidence}\n\n"
+                    "Cross-verify the facts prioritizing the official website content and confirming outlets. "
+                    "Provide a direct, accurate, concise answer (1-4 sentences max), briefly mentioning the official website or confirming source(s). "
                     "NEVER say you don't have confirmed info or ask the user to repeat the query."
                 ),
             })

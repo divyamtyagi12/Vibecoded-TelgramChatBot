@@ -396,3 +396,349 @@ class SQLiteRepository:
             failed_operation=row["failed_operation"] if "failed_operation" in keys else None,
             created_at=row["created_at"] if "created_at" in keys else None,
         )
+
+
+class PostgresRepository:
+    """Persistent PostgreSQL repository designed for Supabase on serverless Vercel."""
+
+    def __init__(self, dsn: str, connection_factory: Any = None) -> None:
+        self._dsn = dsn
+        self._connection_factory = connection_factory
+        self._create_schema()
+
+    def _connect(self) -> Any:
+        if self._connection_factory is not None:
+            return self._connection_factory(self._dsn)
+        import psycopg  # pyrefly: ignore[missing-import]
+        from psycopg.rows import dict_row  # pyrefly: ignore[missing-import]
+
+        return psycopg.connect(
+            self._dsn,
+            row_factory=dict_row,
+            autocommit=False,
+            prepare_threshold=None,  # Compatible with Supabase PgBouncer transaction pooler
+            connect_timeout=10,
+        )
+
+    def _create_schema(self) -> None:
+        """Create tables and indexes idempotently on Supabase PostgreSQL."""
+        ddl_statements = (
+            """
+            CREATE TABLE IF NOT EXISTS group_settings (
+                chat_id BIGINT PRIMARY KEY,
+                response_style TEXT NOT NULL,
+                participation_mode TEXT NOT NULL CHECK (participation_mode IN ('mention', 'reply', 'always', 'off')),
+                memory_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS conversation_context (
+                id BIGSERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT,
+                sender_id BIGINT,
+                author TEXT NOT NULL,
+                text TEXT NOT NULL,
+                reply_to_message_id BIGINT,
+                thread_id BIGINT,
+                is_bot BOOLEAN NOT NULL DEFAULT FALSE,
+                media_type TEXT,
+                media_file_id TEXT,
+                media_unique_id TEXT,
+                media_summary TEXT,
+                quote_text TEXT,
+                conversation_id TEXT,
+                failed_operation TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id BIGSERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                comment TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS context_by_chat ON conversation_context(chat_id, id DESC)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_msg ON conversation_context(chat_id, message_id) WHERE message_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_chat_reply ON conversation_context(chat_id, reply_to_message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_chat_thread ON conversation_context(chat_id, thread_id)",
+            "CREATE INDEX IF NOT EXISTS idx_chat_created ON conversation_context(chat_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_chat_conv ON conversation_context(chat_id, conversation_id)",
+        )
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for stmt in ddl_statements:
+                    cur.execute(stmt)
+            conn.commit()
+
+    def get_settings(self, chat_id: int) -> GroupSettings:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM group_settings WHERE chat_id = %s", (int(chat_id),))
+                row = cur.fetchone()
+        if row is None:
+            settings = GroupSettings(chat_id=int(chat_id))
+            self.save_settings(settings)
+            return settings
+        return GroupSettings(
+            chat_id=int(row["chat_id"]),
+            response_style=str(row["response_style"]),
+            participation_mode=ParticipationMode(row["participation_mode"]),
+            memory_enabled=bool(row["memory_enabled"]),
+        )
+
+    def save_settings(self, settings: GroupSettings) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO group_settings (chat_id, response_style, participation_mode, memory_enabled)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (chat_id) DO UPDATE SET
+                        response_style = EXCLUDED.response_style,
+                        participation_mode = EXCLUDED.participation_mode,
+                        memory_enabled = EXCLUDED.memory_enabled
+                    """,
+                    (
+                        int(settings.chat_id),
+                        settings.response_style,
+                        settings.participation_mode.value,
+                        bool(settings.memory_enabled),
+                    ),
+                )
+            conn.commit()
+
+    def add_context(self, chat_id: int, message: ConversationMessage) -> None:
+        """Persist or upsert a conversation message safely under concurrent webhook load."""
+        try:
+            c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
+            m_id = int(message.message_id) if isinstance(message.message_id, (int, float)) else None
+            s_id = int(message.sender_id) if isinstance(message.sender_id, (int, float)) else None
+            r_id = int(message.reply_to_message_id) if isinstance(message.reply_to_message_id, (int, float)) else None
+            t_id = int(message.thread_id) if isinstance(message.thread_id, (int, float)) else None
+
+            author = (str(message.author or ""))[:128]
+            text = (str(message.text or ""))[:4000]
+            quote_text = (str(message.quote_text))[:1000] if isinstance(message.quote_text, str) else None
+            media_summary = (str(message.media_summary))[:2000] if isinstance(message.media_summary, str) else None
+            media_type = str(message.media_type) if isinstance(message.media_type, str) else None
+            media_file_id = str(message.media_file_id) if isinstance(message.media_file_id, str) else None
+            media_unique_id = str(message.media_unique_id) if isinstance(message.media_unique_id, str) else None
+            conversation_id = str(message.conversation_id)[:128] if isinstance(message.conversation_id, str) else None
+            failed_operation = str(message.failed_operation)[:2000] if isinstance(message.failed_operation, str) else None
+
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    if m_id is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO conversation_context (
+                                chat_id, message_id, sender_id, author, text,
+                                reply_to_message_id, thread_id, is_bot,
+                                media_type, media_file_id, media_unique_id,
+                                media_summary, quote_text, conversation_id, failed_operation
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (chat_id, message_id) WHERE message_id IS NOT NULL DO UPDATE SET
+                                text = EXCLUDED.text,
+                                media_summary = COALESCE(EXCLUDED.media_summary, conversation_context.media_summary),
+                                media_file_id = COALESCE(EXCLUDED.media_file_id, conversation_context.media_file_id),
+                                media_type = COALESCE(EXCLUDED.media_type, conversation_context.media_type),
+                                quote_text = COALESCE(EXCLUDED.quote_text, conversation_context.quote_text),
+                                conversation_id = COALESCE(EXCLUDED.conversation_id, conversation_context.conversation_id),
+                                failed_operation = COALESCE(EXCLUDED.failed_operation, conversation_context.failed_operation)
+                            """,
+                            (
+                                c_id, m_id, s_id, author, text,
+                                r_id, t_id, bool(message.is_bot),
+                                media_type, media_file_id, media_unique_id,
+                                media_summary, quote_text, conversation_id, failed_operation,
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO conversation_context (
+                                chat_id, author, text, thread_id, is_bot,
+                                media_type, media_file_id, media_unique_id,
+                                media_summary, quote_text, conversation_id, failed_operation
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                c_id, author, text, t_id, bool(message.is_bot),
+                                media_type, media_file_id, media_unique_id,
+                                media_summary, quote_text, conversation_id, failed_operation,
+                            ),
+                        )
+                conn.commit()
+        except Exception:
+            logger.warning("Postgres add_context failed for chat %s", chat_id, exc_info=True)
+
+    def get_message(self, chat_id: int, message_id: int) -> ConversationMessage | None:
+        if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
+            return None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM conversation_context WHERE chat_id = %s AND message_id = %s ORDER BY id DESC LIMIT 1",
+                    (int(chat_id), int(message_id)),
+                )
+                row = cur.fetchone()
+        return self._row_to_message(row) if row is not None else None
+
+    def update_media_summary(self, chat_id: int, message_id: int, summary: str) -> None:
+        if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
+            return
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE conversation_context SET media_summary = %s WHERE chat_id = %s AND message_id = %s",
+                        (str(summary)[:2000], int(chat_id), int(message_id)),
+                    )
+                conn.commit()
+        except Exception:
+            logger.warning("Postgres update_media_summary failed for chat %s msg %s", chat_id, message_id, exc_info=True)
+
+    def update_failed_operation(
+        self, chat_id: int, message_id: int, failed_operation: str | None
+    ) -> None:
+        if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
+            return
+        try:
+            val = str(failed_operation)[:2000] if failed_operation is not None else None
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE conversation_context SET failed_operation = %s WHERE chat_id = %s AND message_id = %s",
+                        (val, int(chat_id), int(message_id)),
+                    )
+                conn.commit()
+        except Exception:
+            logger.warning("Postgres update_failed_operation failed for chat %s msg %s", chat_id, message_id, exc_info=True)
+
+    def get_reply_chain(
+        self, chat_id: int, message_id: int, max_depth: int = 10
+    ) -> list[ConversationMessage]:
+        if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
+            return []
+        chain: list[ConversationMessage] = []
+        curr_id: int | None = int(message_id)
+        visited: set[int] = set()
+        for _ in range(max_depth):
+            if curr_id is None or curr_id in visited:
+                break
+            visited.add(curr_id)
+            msg = self.get_message(chat_id, curr_id)
+            if msg is None:
+                break
+            chain.append(msg)
+            curr_id = msg.reply_to_message_id
+        chain.reverse()
+        return chain
+
+    def get_thread_context(
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        limit: int = 10,
+        exclude_message_ids: set[int] | None = None,
+    ) -> list[ConversationMessage]:
+        c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
+        t_id = int(thread_id) if isinstance(thread_id, (int, float)) else None
+        exclude = set(exclude_message_ids) if exclude_message_ids else set()
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if t_id is not None:
+                    cur.execute(
+                        "SELECT * FROM conversation_context WHERE chat_id = %s AND thread_id = %s ORDER BY id DESC LIMIT %s",
+                        (c_id, t_id, limit * 2),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM conversation_context WHERE chat_id = %s ORDER BY id DESC LIMIT %s",
+                        (c_id, limit * 2),
+                    )
+                rows = cur.fetchall()
+
+        filtered: list[ConversationMessage] = []
+        for row in rows:
+            msg = self._row_to_message(row)
+            if msg.message_id and msg.message_id in exclude:
+                continue
+            filtered.append(msg)
+            if len(filtered) >= limit:
+                break
+        return list(reversed(filtered))
+
+    def get_context(self, chat_id: int, limit: int) -> list[ConversationMessage]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM conversation_context WHERE chat_id = %s ORDER BY id DESC LIMIT %s",
+                    (int(chat_id), int(limit)),
+                )
+                rows = cur.fetchall()
+        return [self._row_to_message(row) for row in reversed(rows)]
+
+    def cleanup_old_messages(self, retention_days: int = 14) -> int:
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM conversation_context WHERE created_at < NOW() - (%s || ' days')::INTERVAL",
+                        (str(int(retention_days)),),
+                    )
+                    deleted = cur.rowcount or 0
+                conn.commit()
+            return deleted
+        except Exception:
+            logger.warning("Postgres cleanup_old_messages failed", exc_info=True)
+            return 0
+
+    def add_feedback(self, chat_id: int, user_id: int, rating: int, comment: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO feedback (chat_id, user_id, rating, comment) VALUES (%s, %s, %s, %s)",
+                    (int(chat_id), int(user_id), int(rating), comment[:2000]),
+                )
+            conn.commit()
+
+    @staticmethod
+    def _row_to_message(row: dict[str, Any]) -> ConversationMessage:
+        created = row.get("created_at")
+        return ConversationMessage(
+            author=str(row.get("author") or ""),
+            text=str(row.get("text") or ""),
+            message_id=row.get("message_id"),
+            sender_id=row.get("sender_id"),
+            reply_to_message_id=row.get("reply_to_message_id"),
+            thread_id=row.get("thread_id"),
+            is_bot=bool(row.get("is_bot", False)),
+            media_type=row.get("media_type"),
+            media_file_id=row.get("media_file_id"),
+            media_unique_id=row.get("media_unique_id"),
+            media_summary=row.get("media_summary"),
+            quote_text=row.get("quote_text"),
+            conversation_id=row.get("conversation_id"),
+            failed_operation=row.get("failed_operation"),
+            created_at=str(created) if created is not None else None,
+        )
+
+
+def create_repository(
+    database_url: str | None,
+    sqlite_path: str | PathLike[str],
+) -> SQLiteRepository | PostgresRepository:
+    """Create a Supabase PostgreSQL repository when DATABASE_URL/SUPABASE_DB_URL is set, else SQLite."""
+    clean_url = (database_url or "").strip()
+    if clean_url.startswith(("postgres://", "postgresql://")):
+        logger.info("Initializing persistent Supabase PostgreSQL repository")
+        return PostgresRepository(clean_url)
+    logger.info("Initializing local SQLite repository at %s", sqlite_path)
+    return SQLiteRepository(sqlite_path)

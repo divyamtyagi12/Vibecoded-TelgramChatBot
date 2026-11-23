@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 import logging
 import secrets
@@ -12,19 +13,19 @@ from telegram import Update
 from telegram.ext import Application
 
 from telegram_ai.config import Settings
-from telegram_ai.groq import GroqClient
 from telegram_ai.handlers import TelegramAIHandlers, register_handlers
-from telegram_ai.storage import SQLiteRepository
+from telegram_ai.openrouter import OpenRouterClient
+from telegram_ai.storage import create_repository
 
 logger = logging.getLogger(__name__)
 
 settings = Settings.from_environment()
-repository = SQLiteRepository(settings.database_path)
-ai = GroqClient(
-    settings.groq_api_key,
-    settings.groq_model,
+repository = create_repository(settings.database_url, settings.database_path)
+ai = OpenRouterClient(
+    settings.openrouter_api_key,
+    settings.openrouter_model,
     settings.request_timeout_seconds,
-    vision_model=settings.groq_vision_model,
+    vision_model=settings.openrouter_vision_model,
 )
 handlers = TelegramAIHandlers(
     repository,
@@ -34,6 +35,7 @@ handlers = TelegramAIHandlers(
 )
 telegram_application = Application.builder().token(settings.telegram_bot_token).build()
 register_handlers(telegram_application, handlers)
+_seen_update_ids: OrderedDict[int, None] = OrderedDict()
 
 
 async def _ensure_initialized() -> None:
@@ -81,7 +83,17 @@ async def receive_update(
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     await _ensure_initialized()
-    update = Update.de_json(await request.json(), telegram_application.bot)
+    payload = await request.json()
+    update_id = payload.get("update_id") if isinstance(payload, dict) else None
+    if isinstance(update_id, int):
+        if update_id in _seen_update_ids:
+            logger.info("Ignoring duplicate Telegram webhook update_id=%s", update_id)
+            return {"ok": True}
+        _seen_update_ids[update_id] = None
+        if len(_seen_update_ids) > 1000:
+            _seen_update_ids.popitem(last=False)
+
+    update = Update.de_json(payload, telegram_application.bot)
     try:
         await telegram_application.process_update(update)
     except Exception:

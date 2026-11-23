@@ -23,8 +23,8 @@ from telegram_ai.domain import (
     is_retry_intent,
     should_reply,
 )
-from telegram_ai.groq import GroqClient
-from telegram_ai.storage import SQLiteRepository
+from telegram_ai.openrouter import OpenRouterClient, QuotaExhaustedError
+from telegram_ai.storage import PostgresRepository, SQLiteRepository
 from telegram_ai.vision import MAX_IMAGE_BYTES, download_telegram_image
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,8 @@ _UNRELATED_TOPIC_SWITCH_RE = re.compile(
 class TelegramAIHandlers:
     def __init__(
         self,
-        repository: SQLiteRepository,
-        ai: GroqClient,
+        repository: SQLiteRepository | PostgresRepository,
+        ai: OpenRouterClient,
         max_context: int,
         max_tokens: int = 3000,
     ) -> None:
@@ -397,16 +397,24 @@ class TelegramAIHandlers:
             return
 
         if should_treat_as_image and replied_image_file_id:
+            # Extract caption/text from the replied-to message so vision always has that context
+            replied_caption = ""
+            if message.reply_to_message:
+                raw_rc = getattr(message.reply_to_message, "caption", None) or getattr(message.reply_to_message, "text", None)
+                if isinstance(raw_rc, str) and raw_rc.strip():
+                    replied_caption = raw_rc.strip()
+
             # If prompt is a generic query ("explain", "what is this", "context?"), expand it for vision model
             if _GENERIC_IMAGE_QUERY_RE.match(prompt.strip()):
-                effective_image_prompt = (
-                    f'[Quoting: "{quote_text}"]\n'
-                    "Explain what is shown and discussed in this image in detail."
-                    if quote_text
-                    else "Explain what is shown and discussed in this image in detail."
-                )
+                base_q = "Explain what is shown and discussed in this image in detail."
+                effective_image_prompt = f'[Quoting: "{quote_text}"]\n{base_q}' if quote_text else base_q
             else:
                 effective_image_prompt = prompt_with_quote
+
+            if replied_caption and replied_caption not in effective_image_prompt:
+                effective_image_prompt = (
+                    f'[Replied message caption/text: "{replied_caption}"]\n{effective_image_prompt}'
+                )
 
             reply, failed_op_data, image_summary = await self._handle_image_response(
                 context=context,
@@ -420,6 +428,12 @@ class TelegramAIHandlers:
         else:
             try:
                 reply = await self.ai.answer(prompt_with_quote, settings, history)
+            except QuotaExhaustedError:
+                logger.warning("OpenRouter free quota/rate-limit reached for chat %s", chat_id)
+                await message.reply_text(
+                    "The free AI quota is temporarily rate-limited or exhausted. Please try again in a minute."
+                )
+                return
             except RuntimeError:
                 logger.exception("AI response failed for chat %s", chat_id)
                 await message.reply_text(
@@ -587,6 +601,12 @@ class TelegramAIHandlers:
                 reply = await self.ai.analyze_image(
                     image_data, mime_type or "image/jpeg", prompt, settings, context=history, file_id=file_id
                 )
+        except QuotaExhaustedError:
+            logger.warning("OpenRouter free quota/rate-limit reached during photo processing for chat %s", chat_id)
+            await message.reply_text(
+                "The free AI quota is temporarily rate-limited or exhausted. Please try again in a minute."
+            )
+            return
         except RuntimeError:
             logger.exception("Photo processing failed for chat %s", chat_id)
             err_text = (
@@ -731,6 +751,15 @@ class TelegramAIHandlers:
                 reply = await self.ai.analyze_image(
                     image_data, mime_type or "image/jpeg", prompt, settings, context=history, file_id=file_id
                 )
+        except QuotaExhaustedError:
+            logger.warning("OpenRouter free quota/rate-limit reached during vision reply for chat %s", chat_id)
+            err_msg = "The free AI quota is temporarily rate-limited or exhausted. Please try again in a minute."
+            failed_op = json.dumps({
+                "action": "rate_photo" if is_rating else "analyze_image",
+                "file_id": file_id,
+                "prompt": prompt,
+            })
+            return err_msg, failed_op, None
         except RuntimeError:
             logger.exception("Vision processing failed for replied image in chat %s", chat_id)
             logger.warning("Fallback activated: reason=vision_processing_failed")

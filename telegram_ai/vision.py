@@ -31,8 +31,8 @@ def validate_and_process_image(
 ) -> tuple[bytes, str]:
     """Validate image bytes, resize within dimension bounds, and export as JPEG or PNG.
     
-    Groq vision models (like qwen/qwen3.8-27b) require at least 32 pixels in each dimension
-    and reasonable payload sizes. This ensures all images meet requirements.
+    OpenRouter vision models (like nvidia/nemotron-3.5-super-vl:free) require at least 32 pixels
+    in each dimension and reasonable payload sizes. This ensures all images meet requirements.
     """
     if not image_bytes:
         raise ValueError("Image data is empty.")

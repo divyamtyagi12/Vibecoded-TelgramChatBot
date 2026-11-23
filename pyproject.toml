@@ -8,6 +8,7 @@ dependencies = [
   "lxml>=5.0,<7",
   "pillow>=10.0,<13",
   "primp>=0.15,<3",
+  "psycopg[binary]>=3.2,<4",
   "python-dotenv>=1,<2",
   "python-telegram-bot>=22,<23",
 ]

@@ -8,19 +8,35 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+DEFAULT_OPENROUTER_FREE_MODEL = "nvidia/nemotron-3.5-super-vl:free"
+
 
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
-    groq_api_key: str
-    groq_model: str
+    openrouter_api_key: str
+    openrouter_model: str
     telegram_webhook_secret: str
     database_path: Path
     max_context_messages: int
     request_timeout_seconds: float
-    groq_vision_model: str = "nvidia/nemotron-3.5-super-vl:free"
+    openrouter_vision_model: str = DEFAULT_OPENROUTER_FREE_MODEL
+    database_url: str = ""
     history_retention_days: int = 14
     max_context_tokens: int = 3000
+
+    # Backward-compatible aliases during migration from Groq naming
+    @property
+    def groq_api_key(self) -> str:
+        return self.openrouter_api_key
+
+    @property
+    def groq_model(self) -> str:
+        return self.openrouter_model
+
+    @property
+    def groq_vision_model(self) -> str:
+        return self.openrouter_vision_model
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -35,7 +51,7 @@ class Settings:
             name
             for name, value in (
                 ("TELEGRAM_BOT_TOKEN", token),
-                ("GROQ_API_KEY", api_key),
+                ("OPENROUTER_API_KEY", api_key),
             )
             if not value
         ]
@@ -58,6 +74,11 @@ class Settings:
         if not 500 <= tokens_limit <= 16000:
             tokens_limit = 3000
 
+        database_url = (
+            os.getenv("SUPABASE_DB_URL", "").strip()
+            or os.getenv("DATABASE_URL", "").strip()
+        )
+
         if os.getenv("VERCEL"):
             database_path = Path("/tmp/telegram_ai.sqlite3")
         else:
@@ -65,45 +86,37 @@ class Settings:
             if not database_path.is_absolute():
                 database_path = project_directory / database_path
 
-        default_model = "nvidia/nemotron-3.5-super-vl:free" if api_key.startswith("sk-or-") else "openai/gpt-oss-120b"
+        default_model = (
+            DEFAULT_OPENROUTER_FREE_MODEL
+            if api_key.startswith("sk-or-")
+            else "openai/gpt-oss-120b"
+        )
         raw_model = (
             os.getenv("OPENROUTER_MODEL", "").strip()
             or os.getenv("GROQ_MODEL", "").strip()
             or default_model
         )
-        if api_key.startswith("sk-or-") and (
-            raw_model
-            in (
-                "openai/gpt-oss-120b",
-                "openai/gpt-oss-20b",
-                "llama-3.3-70b-versatile",
-                "qwen/qwen3.8-27b",
-                "nvidia/nemotron-3.5-super-vl",
-            )
-            or not raw_model.endswith(":free")
-        ):
-            raw_model = "nvidia/nemotron-3.5-super-vl:free"
+        if api_key.startswith("sk-or-") and raw_model != DEFAULT_OPENROUTER_FREE_MODEL:
+            raw_model = DEFAULT_OPENROUTER_FREE_MODEL
 
         raw_vision_model = (
             os.getenv("OPENROUTER_VISION_MODEL", "").strip()
             or os.getenv("GROQ_VISION_MODEL", "").strip()
-            or ("nvidia/nemotron-3.5-super-vl:free" if api_key.startswith("sk-or-") else "qwen/qwen3.8-27b")
+            or (DEFAULT_OPENROUTER_FREE_MODEL if api_key.startswith("sk-or-") else "qwen/qwen3.8-27b")
         )
-        if api_key.startswith("sk-or-") and (
-            raw_vision_model in ("qwen/qwen3.8-27b", "nvidia/nemotron-3.5-super-vl")
-            or not raw_vision_model.endswith(":free")
-        ):
-            raw_vision_model = "nvidia/nemotron-3.5-super-vl:free"
+        if api_key.startswith("sk-or-") and raw_vision_model != DEFAULT_OPENROUTER_FREE_MODEL:
+            raw_vision_model = DEFAULT_OPENROUTER_FREE_MODEL
 
         return cls(
             telegram_bot_token=token,
-            groq_api_key=api_key,
-            groq_model=raw_model,
+            openrouter_api_key=api_key,
+            openrouter_model=raw_model,
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             database_path=database_path,
             max_context_messages=max_context,
             request_timeout_seconds=timeout,
-            groq_vision_model=raw_vision_model,
+            openrouter_vision_model=raw_vision_model,
+            database_url=database_url,
             history_retention_days=retention,
             max_context_tokens=tokens_limit,
         )

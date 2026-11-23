@@ -20,9 +20,8 @@ class ParticipationMode(StrEnum):
 class GroupSettings:
     chat_id: int
     response_style: str = (
-        "Chat naturally, casually, and concisely like a human in Telegram (1-4 sentences by default). "
-        "Reply only in English or Hinglish (Roman script) unless a specific language is requested. "
-        "Avoid markdown tables, long checklists, or textbook articles unless explicitly asked."
+        "Chat naturally and concisely like WhatsApp/Telegram (1-3 sentences by default), "
+        "in English or Hinglish unless another language is requested."
     )
     participation_mode: ParticipationMode = ParticipationMode.MENTION
     memory_enabled: bool = True

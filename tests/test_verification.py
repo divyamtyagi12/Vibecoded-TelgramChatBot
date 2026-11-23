@@ -726,9 +726,9 @@ class TestNaturalChatResponseBehavior(unittest.IsolatedAsyncioTestCase):
             return {"role": "assistant", "content": "Direct concise answer."}
 
         with patch.object(client, "_chat_completion", side_effect=fake_completion):
-            # Normal prompt -> 500
+            # Normal prompt -> 200
             await client.answer("What is Python?", settings, [])
-            self.assertEqual(captured_tokens[-1], 500)
+            self.assertEqual(captured_tokens[-1], 200)
 
             # Code prompt -> 2500
             await client.answer("Write a python function to reverse a list", settings, [])

@@ -47,6 +47,25 @@ _GENERIC_IMAGE_QUERY_RE = re.compile(
 )
 
 
+_IMAGE_FOLLOWUP_QUERY_RE = re.compile(
+    r"\b("
+    r"this|it|image|photo|pic|screenshot|poster|meme|picture|scene|character|person|"
+    r"explain|describe|details?|more|elaborate|summarize|context|meaning|translate|read|transcribe|"
+    r"fix|solve|debug|error|bug|code|line|rate|score"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_UNRELATED_TOPIC_SWITCH_RE = re.compile(
+    r"\b("
+    r"next\s+(?:test\s+)?match|test\s+match|live\s+score|scorecard|cricket|ipl|world\s+cup|ind\s+vs|vs\s+nz|ind\s+nz|"
+    r"train\s+\d+|pnr|running\s+status|weather\s+in|current\s+time|latest\s+news|stock\s+price|"
+    r"other\s+questions?|different\s+question|unrelated|change\s+topic"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 class TelegramAIHandlers:
     def __init__(
         self,
@@ -306,9 +325,6 @@ class TelegramAIHandlers:
         failed_op_data: str | None = None
         image_summary: str | None = None
 
-        # Determine whether to treat as an image-grounded response
-        should_treat_as_image = bool(replied_image_file_id)
-
         # Guard: Check if the user's request requires an image that could not be found/accessed
         r_photo = getattr(message.reply_to_message, "photo", None) if message.reply_to_message else None
         r_doc = getattr(message.reply_to_message, "document", None) if message.reply_to_message else None
@@ -323,11 +339,31 @@ class TelegramAIHandlers:
         )
         stored_parent = self.repository.get_message(chat_id, r_id) if r_id else None
         is_stored_parent_image = bool(
-            stored_parent and stored_parent.media_type in ("photo", "document_image")
+            stored_parent
+            and not stored_parent.is_bot
+            and stored_parent.media_type in ("photo", "document_image")
         )
         prompt_requests_image = bool(
-            re.search(r"\b(image|photo|pic|screenshot|meme|picture)\b", prompt, re.IGNORECASE)
+            re.search(r"\b(image|photo|pic|screenshot|meme|picture|poster)\b", prompt, re.IGNORECASE)
         )
+
+        # Determine whether to treat as an image-grounded response:
+        # - Always treat as image if directly replying to an actual image message or explicitly mentioning the image.
+        # - If the image was only inherited from an ancestor in the reply chain (e.g. user replied to a bot text message),
+        #   only treat as an image query if the user is still asking a follow-up about the image and NOT switching to a new topic.
+        if replied_image_file_id:
+            if is_reply_to_image or is_stored_parent_image or prompt_requests_image:
+                should_treat_as_image = True
+            elif _UNRELATED_TOPIC_SWITCH_RE.search(prompt):
+                should_treat_as_image = False
+                replied_image_file_id = None
+            elif _GENERIC_IMAGE_QUERY_RE.match(prompt.strip()) or _IMAGE_FOLLOWUP_QUERY_RE.search(prompt):
+                should_treat_as_image = True
+            else:
+                should_treat_as_image = False
+                replied_image_file_id = None
+        else:
+            should_treat_as_image = False
 
         if not replied_image_file_id and (is_reply_to_image or is_stored_parent_image or prompt_requests_image):
             logger.warning(

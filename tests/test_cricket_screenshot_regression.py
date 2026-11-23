@@ -397,3 +397,70 @@ class TestCricketScreenshotRegression:
             last_user_content = messages_sent[-1]["content"]
             assert 'Replying to message from Macman: "Nhi hota kuch account khali rkh"' in last_user_content
             assert "Question/Request: means" in last_user_content
+
+    @pytest.mark.asyncio
+    async def test_unrelated_question_after_image_routes_to_text_answer(self):
+        """Regression test for Yog-A-Mania poster -> 'Next test match ind nz' scenario.
+        
+        When a user replies to the bot's earlier image explanation with a completely
+        unrelated question ('Next test match ind nz'), the bot must NOT re-analyze the
+        old poster image and must route to self.ai.answer() instead.
+        """
+        chat_id = -1009988
+        self.repo.save_settings(GroupSettings(chat_id=chat_id, participation_mode=ParticipationMode.REPLY))
+
+        bot_earlier_msg = MagicMock()
+        bot_earlier_msg.message_id = 301
+        bot_earlier_msg.from_user = self.bot_user
+        bot_earlier_msg.photo = None
+        bot_earlier_msg.document = None
+
+        self.repo.add_context(
+            chat_id,
+            ConversationMessage(
+                author="TelegramAI",
+                text='This is a poster for "Yog-A-Mania", a college yoga event.',
+                message_id=301,
+                sender_id=12345,
+                is_bot=True,
+                media_type="photo",
+                media_file_id="yoga_poster_fid_300",
+                media_summary="Poster for Yog-A-Mania yoga event at college amphitheatre",
+            ),
+        )
+
+        dre_user = MagicMock(id=8882, full_name="Dre", is_bot=False)
+        followup_msg = MagicMock()
+        followup_msg.message_id = 302
+        followup_msg.chat_id = chat_id
+        followup_msg.from_user = dre_user
+        followup_msg.text = "Next test match ind nz"
+        followup_msg.reply_to_message = bot_earlier_msg
+        followup_msg.quote = None
+        followup_msg.photo = None
+        followup_msg.document = None
+        followup_msg.entities = []
+        followup_msg.reply_text = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat = MagicMock(id=chat_id)
+        update.effective_user = dre_user
+        update.effective_message = followup_msg
+
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.id = 12345
+        ctx.bot.username = "workflow012_bot"
+        ctx.bot.get_me = AsyncMock(return_value=self.bot_user)
+        ctx.bot.send_chat_action = AsyncMock()
+
+        self.ai.answer = AsyncMock(return_value="The next India vs New Zealand Test match starts on Friday at 9:30 AM IST.")
+
+        await self.handlers.respond(update, ctx)
+
+        # Must route to text/live-search answer(), NOT analyze_image()
+        self.ai.answer.assert_awaited_once()
+        self.ai.analyze_image.assert_not_awaited()
+        followup_msg.reply_text.assert_awaited_once_with(
+            "The next India vs New Zealand Test match starts on Friday at 9:30 AM IST."
+        )

@@ -87,10 +87,16 @@ _LIVE_KEYWORDS_RE = re.compile(
     r"schedule|fixture|series|ind\s+vs|ind\s+nz|who\s+won|winner|champion|finals?|semi[- ]?finals?|"
     r"tournament|on\s*going|ongoing|standings?|points?\s+table|leaderboard|qualifiers?|"
     r"ffws|free\s+fire|bgmi|bmps|bgis|pmgc|valorant|vct|esports|world\s+cup|world\s+series|"
-    r"cricket|football|ipl|f1|weather|today|current\s+time|2025|2026|2027|"
-    r"news|latest|breaking|stock|stocks|share|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold|silver|"
-    r"verify|fact[- ]?check|real\s+or\s+fake|is\s+this\s+true|rumou?r"
+    r"cricket|football|ipl|f1|weather|today|current\s+time|currently|right\s+now|2025|2026|2027|"
+    r"news|latest|breaking|recent|new\s+episode|episode\s+release|release\s+date|"
+    r"stock|stocks|share\s+price|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold\s+price|silver\s+price|"
+    r"verify|fact[- ]?check|real\s+or\s+fake|is\s+this\s+true|rumou?r|sources?|official\s+website"
     r")\b",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_VERIFY_RE = re.compile(
+    r"\b(verify|fact[- ]?check|real\s+or\s+fake|is\s+this\s+true|official\s+website|official\s+site|sources?)\b",
     re.IGNORECASE,
 )
 
@@ -128,15 +134,22 @@ _CASUAL_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 
-_FACTUAL_QUESTION_RE = re.compile(
-    r"(\?|\b("
-    r"who|what|when|where|why|which|how\s+(?:much|many|old|far|long|does|do|is|are|did|to)|"
-    r"tell\s+me|check|find|search|official|website|site|release|launch|date|specs?|features?|"
-    r"price|cost|salary|ceo|founder|owner|headquarters|version|download|requirements?|eligible|"
-    r"eligibility|rules?|policy|syllabus|exam|result|results|cutoff|ranking|rank|winner|record"
-    r")\b)",
-    re.IGNORECASE,
-)
+
+def needs_web_search(prompt: str, context: list[ConversationMessage] | None = None) -> bool:
+    """Fast local heuristic (<0.1ms) to decide whether a message requires external/current web search."""
+    clean = (prompt or "").strip()
+    if not clean or _CASUAL_ONLY_RE.match(clean):
+        return False
+    if _LIVE_KEYWORDS_RE.search(clean):
+        return True
+    # Only inherit live-search intent from recent context on very short follow-ups (e.g. "2026", "Ind nz", "Yes")
+    if context and len(clean.split()) <= 4 and not _CODE_KEYWORDS_RE.search(clean):
+        recent_user = " ".join(
+            m.text for m in context[-2:] if m.text and not m.is_bot and m.author != "TelegramAI"
+        )
+        if _LIVE_KEYWORDS_RE.search(recent_user):
+            return True
+    return False
 
 
 _SECRET_PATTERNS = (
@@ -271,6 +284,7 @@ class OpenRouterClient:
 
         is_code = bool(_CODE_KEYWORDS_RE.search(prompt))
         is_detailed = bool(_DETAILED_KEYWORDS_RE.search(prompt))
+        requires_search = needs_web_search(prompt, context)
 
         if is_code:
             answer_max_tokens = 2500
@@ -323,78 +337,67 @@ class OpenRouterClient:
                 )
         messages.append({"role": "user", "content": final_user_prompt})
 
-        combined_context_text = " ".join(
-            [m.text for m in context[-3:] if m.text and not m.is_bot and m.author != "TelegramAI"] + [prompt]
-        ).strip()
-        is_referential_chat_reply = bool(
-            context
-            and len(prompt.split()) <= 6
-            and not prompt.startswith("[")
-            and _REFERENTIAL_REPLY_RE.search(prompt)
-            and not _LIVE_KEYWORDS_RE.search(prompt)
-        )
-        is_casual_only = bool(_CASUAL_ONLY_RE.match(prompt.strip()))
-        is_live_query = bool(_LIVE_KEYWORDS_RE.search(prompt) or _LIVE_KEYWORDS_RE.search(combined_context_text))
-        needs_official_verification = (
-            not is_casual_only
-            and not is_code
-            and not is_referential_chat_reply
-            and (is_live_query or bool(_FACTUAL_QUESTION_RE.search(prompt)))
-        )
+        # FAST PATH: For ordinary messages (casual chat, general knowledge, coding, math, follow-ups),
+        # make a single OpenRouter API call with no tool-schema overhead and no web search.
+        if not requires_search:
+            msg = await self._chat_completion(
+                messages,
+                max_tokens=answer_max_tokens,
+                temperature=0.6,
+            )
+            answer_text = (msg.get("content") or "").strip()
+            if answer_text and not self._is_canned_refusal(answer_text):
+                return _clean_chat_response(answer_text)
+            if answer_text and self._is_canned_refusal(answer_text):
+                try:
+                    fallback_messages = list(messages) + [
+                        {
+                            "role": "system",
+                            "content": (
+                                "IMPORTANT: The user is chatting casually in a Telegram group. "
+                                "Do NOT refuse or lecture. Reply naturally and directly in English or Hinglish."
+                            ),
+                        }
+                    ]
+                    unfiltered = await self._chat(
+                        fallback_messages,
+                        max_tokens=answer_max_tokens,
+                        temperature=0.7,
+                        force_model=_OPENROUTER_FREE_MODEL if self.is_openrouter else "qwen/qwen3.8-27b",
+                    )
+                    if unfiltered:
+                        return _clean_chat_response(unfiltered)
+                except Exception:
+                    pass
+                return _clean_chat_response(answer_text)
+            return "I was unable to generate a response right now. Please try again."
 
-        # Run tool-execution loop (up to 3 tool rounds so model can search + inspect official websites)
+        combined_context_text = " ".join(
+            [m.text for m in context[-2:] if m.text and not m.is_bot and m.author != "TelegramAI"] + [prompt]
+        ).strip()
+
+        # SEARCH PATH: Only runs for current info, live scores, news, prices, or verification requests.
         tool_used = False
-        for step in range(3):
+        msg = {}
+        for step in range(2):
             msg = await self._chat_completion(
                 messages,
                 tools=_TOOLS,
                 tool_choice="auto",
                 max_tokens=answer_max_tokens,
-                temperature=0.6,
+                temperature=0.5,
             )
             tool_calls = msg.get("tool_calls")
             if not tool_calls:
                 answer_text = (msg.get("content") or "").strip()
                 if answer_text:
-                    # If this is a factual/live query and the model skipped web_search, force official-website + multi-source verification.
-                    if not tool_used and needs_official_verification:
-                        logger.info("Model answered factual/live query without web_search; executing official-source verification")
+                    # If the model skipped web_search on a live query, run a single proactive search
+                    if not tool_used:
+                        logger.info("Model answered live query without web_search; executing proactive search")
                         break
-                    # Check if the model gave a false negative / refusal / "main search karke bata deta hoon" without actually searching
                     if self._is_refusal_or_unaware(answer_text):
-                        logger.info("Model gave unaware/lazy response without searching; executing fallback search")
+                        logger.info("Model gave unaware response; executing fallback search")
                         break
-                    # Check if the primary model gave a canned safety refusal on a sensitive/banter message
-                    if self._is_canned_refusal(answer_text):
-                        logger.info("Primary model gave canned refusal; falling back to unfiltered model")
-                        try:
-                            fallback_messages = list(messages) + [
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        "IMPORTANT: The user is chatting casually with slang/profanity in a Telegram group. "
-                                        "Do NOT refuse, do NOT lecture, do NOT say 'Keep it clean' or 'I am an AI'. "
-                                        "Reply ONLY in English or Hinglish (Roman script)—never use pure Hindi/Devanagari script unless explicitly asked. "
-                                        "If the user is correcting a fact or making a point (e.g. pointing out a match is in NZ / away, not in India), directly acknowledge and address their actual point accurately in casual Hinglish/English without repeating the old mistake! "
-                                        "If it is pure roasting/banter with no question or factual point, reply with a funny, savage, street-smart English or Hinglish roast/comeback in 1-2 lines!"
-                                    ),
-                                }
-                            ]
-                            unfiltered_model = (
-                                _OPENROUTER_FREE_MODEL
-                                if self.is_openrouter
-                                else "qwen/qwen3.8-27b"
-                            )
-                            unfiltered = await self._chat(
-                                fallback_messages,
-                                max_tokens=answer_max_tokens,
-                                temperature=0.8,
-                                force_model=unfiltered_model,
-                            )
-                            if unfiltered and not self._is_canned_refusal(unfiltered):
-                                return _clean_chat_response(unfiltered)
-                        except Exception:
-                            pass
                     return _clean_chat_response(answer_text)
                 break
 
@@ -423,39 +426,28 @@ class OpenRouterClient:
                     "content": tool_result,
                 })
 
-        # If a factual/live query was asked (or model claimed it didn't have info) and tools were not triggered,
-        # run multi-source search AND fetch the top official/authoritative webpage(s) directly.
-        if not tool_used and (
-            needs_official_verification
-            or self._is_refusal_or_unaware((msg.get("content") or "") if isinstance(msg, dict) else "")
-        ):
+        # Proactive fallback search if the model didn't call web_search on a live/current-info query
+        if not tool_used:
             search_query = combined_context_text if len(prompt.split()) <= 5 and combined_context_text else prompt
-            logger.info("Executing proactive official-source search for: %r", search_query)
+            logger.info("Executing proactive live search for: %r", search_query)
             search_data = await self.search_client.search(search_query, max_results=4)
 
-            official_sections: list[str] = []
-            official_urls = extract_official_urls(search_data, max_urls=2)
-            if official_urls:
-                logger.info("Fetching official/authoritative page(s): %s", official_urls)
-                page_texts = await asyncio.gather(
-                    *(self.search_client.fetch_page(u, max_chars=1800) for u in official_urls),
-                    return_exceptions=True,
-                )
-                for u, pt in zip(official_urls, page_texts):
-                    if isinstance(pt, str) and pt and not pt.startswith(("Could not retrieve", "Error retrieving", "Invalid URL", "Page contains no")):
-                        official_sections.append(f"=== Official/Source Webpage ({u}) ===\n{pt}")
-
             combined_evidence = search_data
-            if official_sections:
-                combined_evidence = f"{search_data}\n\n" + "\n\n".join(official_sections)
+            # Fetch top official webpage only when the user explicitly asks to verify/check an official source
+            if _EXPLICIT_VERIFY_RE.search(prompt):
+                official_urls = extract_official_urls(search_data, max_urls=1)
+                if official_urls:
+                    logger.info("Fetching official page for verification: %s", official_urls[0])
+                    page_text = await self.search_client.fetch_page(official_urls[0], max_chars=1500)
+                    if isinstance(page_text, str) and page_text and not page_text.startswith(("Could not retrieve", "Error retrieving", "Invalid URL", "Page contains no")):
+                        combined_evidence = f"{search_data}\n\n=== Official Webpage ({official_urls[0]}) ===\n{page_text}"
 
             messages.append({
                 "role": "user",
                 "content": (
-                    f"Here is verified real-time information retrieved from official websites and multiple sources for this query ({search_query}):\n\n"
+                    f"Here is verified real-time information retrieved for this query ({search_query}):\n\n"
                     f"{combined_evidence}\n\n"
-                    "Cross-verify the facts prioritizing the official website content and confirming outlets. "
-                    "Provide a direct, accurate, concise answer (1-4 sentences max), including 1-2 direct source links (URLs) from the retrieved results above. "
+                    "Provide a direct, accurate, concise answer (1-4 sentences max), including 1-2 direct source URLs from the retrieved results above. "
                     "Only cite URLs actually present in the retrieved results; never fabricate links."
                 ),
             })
@@ -464,45 +456,18 @@ class OpenRouterClient:
             messages.append({
                 "role": "user",
                 "content": (
-                    "Cross-verify the retrieved results across sources and provide a concise, direct final answer (1-4 sentences or short bullets), "
-                    "including 1-2 direct source URLs from the retrieved results. Never fabricate links or repeat the question."
+                    "Provide a concise, direct final answer (1-4 sentences or short bullets) using the retrieved search results, "
+                    "including 1-2 direct source URLs from the results. Never fabricate links or repeat the question."
                 ),
             })
 
-        # Final synthesis call
+        # Final synthesis call (no tools needed now)
         final_msg = await self._chat_completion(
             messages,
-            tools=_TOOLS,
-            tool_choice="auto",
             max_tokens=answer_max_tokens,
-            temperature=0.6,
+            temperature=0.5,
         )
         final_text = (final_msg.get("content") or "").strip()
-        if not final_text and final_msg.get("tool_calls"):
-            tc = final_msg["tool_calls"][0]
-            fname = tc.get("function", {}).get("name")
-            call_id = tc.get("id", "")
-            try:
-                args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-            except Exception:
-                args = {}
-            if fname == "web_search":
-                res = await self.search_client.search(args.get("query", prompt), max_results=3)
-            elif fname == "fetch_webpage":
-                res = await self.search_client.fetch_page(args.get("url", ""), max_chars=1200)
-            else:
-                res = "Data received."
-            messages.append(final_msg)
-            messages.append({"role": "tool", "tool_call_id": call_id, "content": res})
-            extra_msg = await self._chat_completion(
-                messages,
-                tools=_TOOLS,
-                tool_choice="auto",
-                max_tokens=answer_max_tokens,
-                temperature=0.6,
-            )
-            final_text = (extra_msg.get("content") or "").strip()
-
         return _clean_chat_response(final_text) or "I was unable to retrieve that information right now. Please try again."
 
     async def rate_photo(

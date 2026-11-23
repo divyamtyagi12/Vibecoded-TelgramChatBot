@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -134,43 +135,37 @@ def extract_official_urls(search_text: str, max_urls: int = 2) -> list[str]:
 class WebSearchClient:
     """Client for real-time web search with datacenter-safe fallbacks (Bing RSS, Google News RSS, Yahoo Finance)."""
 
-    def __init__(self, timeout_seconds: float = 6.0) -> None:
+    def __init__(self, timeout_seconds: float = 4.5) -> None:
         self.timeout_seconds = timeout_seconds
 
     async def search(self, query: str, max_results: int = 5) -> str:
-        """Perform a multi-source web search in parallel so the LLM can cross-verify facts across outlets."""
+        """Perform fast targeted search (parallel only across relevant sources)."""
         clean_query = query.strip()
         if not clean_query:
             return "No search query provided."
 
-        logger.info("Executing multi-source web search for: %r", clean_query)
+        logger.info("Executing web search for: %r", clean_query)
 
         is_finance = bool(_FINANCE_QUERY_RE.search(clean_query))
+        is_news = bool(_NEWS_QUERY_RE.search(clean_query))
+        on_vercel = bool(os.getenv("VERCEL"))
 
-        tasks: list[Any] = [
-            self._search_ddg(clean_query, max_results=max_results),
-            self._search_bing_rss(clean_query, max_results=max_results),
-            self._search_google_news_rss(clean_query, max_results=min(max_results, 4)),
-        ]
+        # Run only relevant providers in parallel; skip DDG Lite on Vercel where AWS IPs get HTTP 202
+        task_specs: list[tuple[str, Any]] = []
         if is_finance:
-            tasks.append(self._search_yahoo_finance(clean_query))
+            task_specs.append(("Yahoo Finance", self._search_yahoo_finance(clean_query)))
+        if not on_vercel:
+            task_specs.append(("DuckDuckGo Web", self._search_ddg(clean_query, max_results=max_results)))
+        task_specs.append(("Bing Web", self._search_bing_rss(clean_query, max_results=max_results)))
+        if is_news or on_vercel:
+            task_specs.append(("Google News", self._search_google_news_rss(clean_query, max_results=min(max_results, 4))))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        ddg_res = results[0] if isinstance(results[0], str) else None
-        bing_res = results[1] if isinstance(results[1], str) else None
-        gnews_res = results[2] if isinstance(results[2], str) else None
-        finance_res = results[3] if is_finance and isinstance(results[3], str) else None
+        raw_results = await asyncio.gather(*(coro for _, coro in task_specs), return_exceptions=True)
 
         sections: list[str] = []
-        if finance_res:
-            sections.append(f"=== Source: Yahoo Finance ===\n{finance_res}")
-        if ddg_res:
-            sections.append(f"=== Source: DuckDuckGo Web ===\n{ddg_res}")
-        if bing_res:
-            sections.append(f"=== Source: Bing Web ===\n{bing_res}")
-        if gnews_res:
-            sections.append(f"=== Source: Google News ===\n{gnews_res}")
+        for (label, _), res in zip(task_specs, raw_results):
+            if isinstance(res, str) and res:
+                sections.append(f"=== Source: {label} ===\n{res}")
 
         if not sections:
             return f"No results found or search failed for: {clean_query}"

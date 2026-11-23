@@ -315,6 +315,11 @@ class GroqClient:
             if not tool_calls:
                 answer_text = (msg.get("content") or "").strip()
                 if answer_text:
+                    # If this is a live/real-time query (stocks, news, scores, tournaments, weather, etc.)
+                    # and the model skipped web_search (risking stale/hallucinated data), force fallback search.
+                    if not tool_used and is_live_query:
+                        logger.info("Model answered live query without web_search; executing proactive search")
+                        break
                     # Check if the model gave a false negative / refusal / "main search karke bata deta hoon" without actually searching
                     if self._is_refusal_or_unaware(answer_text):
                         logger.info("Model gave unaware/lazy response without searching; executing fallback search")

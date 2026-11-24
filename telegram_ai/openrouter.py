@@ -262,6 +262,9 @@ def _clean_chat_response(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
+    # Remove hallucinated internal citation markers like 【3†L1-L3】
+    text = re.sub(r"【[^】]*】", "", text)
+
     # Remove trailing robotic sign-offs if present on their own line at the end
     trailing_patterns = (
         r"\n+(?:hope this helps!?|let me know if you (?:have|need) (?:any|anything)(?: other)? questions!?[.!]?|feel free to ask.*|have a great day!?)\s*$",
@@ -343,7 +346,7 @@ class OpenRouterClient:
             "- Use contractions and natural phrasing. Don't force emojis. Admit if you don't know.\n"
             "- Speaker labels like '[Speaker: Dre]' are metadata only—never treat the speaker's name as the topic. Always interpret ambiguous words ('What about Argon, Hydrogen, Neon?') within the active conversation topic, not in isolation. If the user corrects you ('I meant the model', 'Model bhi h Gemini k'), re-answer their earlier question with the corrected meaning—never repeat your old answer. If truly unclear with no context, ask a short clarification.\n"
             "- For current AI model rankings or codenames, rely on live search results, distinguish released models from experimental/internal codenames, and never invent model names or assume outdated versions (like Gemini 1.5) are current.\n"
-            "- When using web search results, include 1–2 real source URLs; never invent links or claim you searched when you didn't.\n\n"
+            "- When using web search results, quote ONLY numbers/prices/scores that appear verbatim in the retrieved results and include 1–2 real source URLs; NEVER guess or invent stock prices, scores, or links from memory—if the live number isn't in the results, say so clearly.\n\n"
             "EXAMPLES:\n"
             "User: Kya haal hai?\n"
             "You: Sab badhiya, tu bata kya chal raha hai?\n\n"
@@ -524,8 +527,8 @@ class OpenRouterClient:
                 "content": (
                     f"Here is verified real-time information retrieved for this query ({search_query}):\n\n"
                     f"{combined_evidence}\n\n"
-                    "Provide a direct, accurate, concise answer (1-4 sentences max), including 1-2 direct source URLs from the retrieved results above. "
-                    "Only cite URLs actually present in the retrieved results; never fabricate links."
+                    "Provide a direct, accurate, concise answer (1-4 sentences max), using ONLY numbers/prices/facts present in the retrieved results above, and include 1-2 direct source URLs. "
+                    "Never guess or invent any stock price, statistic, or URL from memory; if a live price is missing from the results, say you couldn't fetch the exact live price."
                 ),
             })
 
@@ -533,8 +536,8 @@ class OpenRouterClient:
             messages.append({
                 "role": "user",
                 "content": (
-                    "Provide a concise, direct final answer (1-4 sentences or short bullets) using the retrieved search results, "
-                    "including 1-2 direct source URLs from the results. Never fabricate links or repeat the question."
+                    "Provide a concise, direct final answer (1-4 sentences or short bullets) using ONLY numbers/prices/facts present in the retrieved search results, "
+                    "including 1-2 direct source URLs from the results. Never invent stock prices, statistics, links, or internal citation brackets."
                 ),
             })
 

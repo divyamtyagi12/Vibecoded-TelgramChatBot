@@ -46,24 +46,60 @@ _NEWS_QUERY_RE = re.compile(
 _FINANCE_STOPWORDS = {
     "stock", "stocks", "share", "shares", "price", "prices", "live", "quote", "quotes",
     "today", "news", "latest", "current", "any", "on", "of", "the", "what", "is", "whats",
-    "for", "in", "november", "december", "january", "february", "march", "april", "may",
-    "june", "july", "august", "september", "october", "2025", "2026", "2027", "check",
-    "pull", "get", "me", "about", "update", "updates", "market", "value", "how", "much",
+    "for", "in", "check", "pull", "get", "me", "about", "update", "updates", "market",
+    "value", "how", "much", "close", "closed", "closing", "open", "opening", "trading",
+    "performance", "chart", "usd", "inr", "rate", "now", "right",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july", "august", "september",
+    "october", "november", "december",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "2024", "2025", "2026", "2027", "2028",
 }
 
-_COMMON_TICKER_FIXES = {
-    "nvidi": "nvidia",
-    "nvidea": "nvidia",
-    "aple": "apple",
-    "tsla": "TSLA",
+_KNOWN_DIRECT_TICKERS = {
+    "nvidia": "NVDA",
+    "nvidi": "NVDA",
+    "nvidea": "NVDA",
     "nvda": "NVDA",
+    "apple": "AAPL",
+    "aple": "AAPL",
+    "aapl": "AAPL",
+    "tesla": "TSLA",
+    "tsla": "TSLA",
+    "microsoft": "MSFT",
+    "msft": "MSFT",
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "googl": "GOOGL",
+    "goog": "GOOG",
+    "amazon": "AMZN",
+    "amzn": "AMZN",
+    "meta": "META",
+    "amd": "AMD",
+    "intel": "INTC",
+    "intc": "INTC",
+    "netflix": "NFLX",
+    "nflx": "NFLX",
     "btc": "BTC-USD",
     "bitcoin": "BTC-USD",
     "eth": "ETH-USD",
     "ethereum": "ETH-USD",
+    "sol": "SOL-USD",
+    "solana": "SOL-USD",
     "nifty": "^NSEI",
     "sensex": "^BSESN",
+    "nasdaq": "^IXIC",
+    "dow": "^DJI",
+    "gold": "GC=F",
+    "silver": "SI=F",
+    "reliance": "RELIANCE.NS",
+    "tcs": "TCS.NS",
+    "infosys": "INFY.NS",
+    "hdfc": "HDFCBANK.NS",
 }
+
+_COMMON_TICKER_FIXES = _KNOWN_DIRECT_TICKERS
 
 
 _AGGREGATOR_DOMAINS = (
@@ -256,59 +292,110 @@ class WebSearchClient:
     async def _search_yahoo_finance(self, clean_query: str) -> str | None:
         """Fetch live stock/crypto quote and headlines from Yahoo Finance."""
         words = re.findall(r"[A-Za-z0-9.\-^]+", clean_query)
-        candidates = [
-            _COMMON_TICKER_FIXES.get(w.lower(), w)
-            for w in words
-            if w.lower() not in _FINANCE_STOPWORDS and len(w) >= 2
-        ]
-        if not candidates:
+        direct_symbol: str | None = None
+        candidates: list[str] = []
+        for w in words:
+            low = w.lower()
+            if low in _FINANCE_STOPWORDS or w.isdigit() or len(w) < 2:
+                continue
+            mapped = _COMMON_TICKER_FIXES.get(low)
+            if mapped:
+                if direct_symbol is None:
+                    direct_symbol = mapped
+                if mapped not in candidates:
+                    candidates.append(mapped)
+            elif w not in candidates:
+                candidates.append(w)
+
+        if not candidates and not direct_symbol:
             return None
-        search_term = " ".join(candidates[:3])
+
+        search_term = direct_symbol or " ".join(candidates[:2])
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
-                search_res = await client.get(
-                    "https://query1.finance.yahoo.com/v1/finance/search",
-                    params={"q": search_term, "quotesCount": 2, "newsCount": 3},
-                    headers=_HEADERS,
-                )
-                if search_res.status_code != 200:
-                    return None
-                data = search_res.json()
-                quotes = data.get("quotes") or []
-                news = data.get("news") or []
+                symbol: str | None = direct_symbol
+                shortname: str | None = None
+                news: list[dict[str, Any]] = []
 
-                out_lines: list[str] = []
-                if quotes:
-                    symbol = quotes[0].get("symbol")
-                    shortname = quotes[0].get("shortname") or quotes[0].get("longname") or symbol
-                    if symbol:
-                        chart_res = await client.get(
-                            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                            params={"interval": "1d", "range": "1d"},
+                # Try Yahoo search API to resolve unknown symbols and grab finance news
+                for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+                    try:
+                        search_res = await client.get(
+                            f"https://{host}/v1/finance/search",
+                            params={"q": search_term, "quotesCount": 2, "newsCount": 3},
                             headers=_HEADERS,
                         )
-                        if chart_res.status_code == 200:
-                            chart_data = chart_res.json()
-                            meta = (chart_data.get("chart", {}).get("result") or [{}])[0].get("meta", {})
-                            price = meta.get("regularMarketPrice")
-                            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
-                            currency = meta.get("currency", "USD")
-                            market_ts = meta.get("regularMarketTime")
-                            ts_str = ""
-                            if isinstance(market_ts, (int, float)):
-                                from datetime import datetime, timezone as _tz
-                                dt = datetime.fromtimestamp(market_ts, tz=_tz.utc)
-                                ts_str = f" [last trade: {dt.strftime('%a, %d %b %Y %H:%M UTC')}]"
-                            if price is not None:
-                                change_str = ""
-                                if prev:
-                                    diff = price - prev
-                                    pct = (diff / prev) * 100
-                                    sign = "+" if diff >= 0 else ""
-                                    change_str = f" ({sign}{diff:.2f} / {sign}{pct:.2f}% vs prev close {prev:.2f})"
-                                out_lines.append(
-                                    f"Live Market Quote: {shortname} ({symbol}) = {price:.2f} {currency}{change_str}{ts_str}"
-                                )
+                        if search_res.status_code == 200:
+                            data = search_res.json()
+                            quotes = data.get("quotes") or []
+                            news = data.get("news") or []
+                            if quotes:
+                                if not symbol:
+                                    symbol = quotes[0].get("symbol")
+                                shortname = quotes[0].get("shortname") or quotes[0].get("longname") or symbol
+                            break
+                    except Exception:
+                        continue
+
+                # If multi-word search returned no quotes, retry with just the first candidate
+                if not symbol and len(candidates) > 1:
+                    try:
+                        retry_res = await client.get(
+                            "https://query2.finance.yahoo.com/v1/finance/search",
+                            params={"q": candidates[0], "quotesCount": 2, "newsCount": 3},
+                            headers=_HEADERS,
+                        )
+                        if retry_res.status_code == 200:
+                            data = retry_res.json()
+                            quotes = data.get("quotes") or []
+                            if not news:
+                                news = data.get("news") or []
+                            if quotes:
+                                symbol = quotes[0].get("symbol")
+                                shortname = quotes[0].get("shortname") or quotes[0].get("longname") or symbol
+                    except Exception:
+                        pass
+
+                out_lines: list[str] = []
+                if symbol:
+                    chart_data = None
+                    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+                        try:
+                            chart_res = await client.get(
+                                f"https://{host}/v8/finance/chart/{symbol}",
+                                params={"interval": "1d", "range": "1d"},
+                                headers=_HEADERS,
+                            )
+                            if chart_res.status_code == 200:
+                                chart_data = chart_res.json()
+                                break
+                        except Exception:
+                            continue
+
+                    if chart_data:
+                        meta = (chart_data.get("chart", {}).get("result") or [{}])[0].get("meta", {})
+                        price = meta.get("regularMarketPrice")
+                        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+                        currency = meta.get("currency", "USD")
+                        display_name = shortname or meta.get("shortName") or meta.get("longName") or symbol
+                        market_ts = meta.get("regularMarketTime")
+                        ts_str = ""
+                        if isinstance(market_ts, (int, float)):
+                            from datetime import datetime, timezone as _tz
+                            dt = datetime.fromtimestamp(market_ts, tz=_tz.utc)
+                            ts_str = f" [last trade: {dt.strftime('%a, %d %b %Y %H:%M UTC')}]"
+                        if price is not None:
+                            change_str = ""
+                            if prev:
+                                diff = price - prev
+                                pct = (diff / prev) * 100
+                                sign = "+" if diff >= 0 else ""
+                                change_str = f" ({sign}{diff:.2f} / {sign}{pct:.2f}% vs prev close {prev:.2f})"
+                            out_lines.append(
+                                f"AUTHORITATIVE LIVE MARKET QUOTE (Yahoo Finance — use this exact price and prev close): "
+                                f"{display_name} ({symbol}) = {price:.2f} {currency}{change_str}{ts_str}\n"
+                                f"URL: https://finance.yahoo.com/quote/{symbol}/"
+                            )
                 if news:
                     out_lines.append("Recent Finance News:")
                     for item in news[:3]:

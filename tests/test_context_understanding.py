@@ -129,6 +129,57 @@ class TestContextUnderstanding(unittest.IsolatedAsyncioTestCase):
         prompt = _build_contextual_user_prompt("What about season 2?", [])
         self.assertEqual(prompt, "What about season 2?")
 
+    # 8. Stock query with dates resolves ticker cleanly and cleans fake citation brackets
+    def test_08_stock_date_query_and_citation_cleanup(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from telegram_ai.openrouter import _clean_chat_response
+        from telegram_ai.search import WebSearchClient
+
+        cleaned = _clean_chat_response("NVDA is at $155.13【3†L1-L3】.")
+        self.assertEqual(cleaned, "NVDA is at $155.13.")
+
+        mock_search_resp = MagicMock()
+        mock_search_resp.status_code = 200
+        mock_search_resp.json.return_value = {
+            "quotes": [{"symbol": "NVDA", "shortname": "NVIDIA Corporation"}],
+            "news": [],
+        }
+        mock_chart_resp = MagicMock()
+        mock_chart_resp.status_code = 200
+        mock_chart_resp.json.return_value = {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 155.13,
+                            "chartPreviousClose": 165.05,
+                            "currency": "USD",
+                            "regularMarketTime": 1795531320,
+                        }
+                    }
+                ]
+            }
+        }
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=[mock_search_resp, mock_chart_resp])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        async def _run():
+            with patch("telegram_ai.search.httpx.AsyncClient", return_value=mock_client):
+                sc = WebSearchClient(timeout_seconds=5.0)
+                return await sc._search_yahoo_finance("NVIDIA stock price today November 24 2026")
+
+        res = asyncio.run(_run())
+        self.assertIsNotNone(res)
+        self.assertIn("NVDA", res)
+        self.assertIn("155.13 USD", res)
+        self.assertIn("https://finance.yahoo.com/quote/NVDA/", res)
+        # Verify the Yahoo search query was clean ("NVDA"), not polluted by "24" or "November"
+        first_call_params = mock_client.get.call_args_list[0].kwargs.get("params", {})
+        self.assertEqual(first_call_params.get("q"), "NVDA")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

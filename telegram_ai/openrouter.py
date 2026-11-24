@@ -347,9 +347,18 @@ class OpenRouterClient:
             "- Speaker labels like '[Speaker: Dre]' are metadata only—never treat the speaker's name as the topic. Always interpret ambiguous words ('What about Argon, Hydrogen, Neon?') within the active conversation topic, not in isolation. If the user corrects you ('I meant the model', 'Model bhi h Gemini k'), re-answer their earlier question with the corrected meaning—never repeat your old answer. If truly unclear with no context, ask a short clarification.\n"
             "- For current AI model rankings or codenames, rely on live search results, distinguish released models from experimental/internal codenames, and never invent model names or assume outdated versions (like Gemini 1.5) are current.\n"
             "- When using web search results, quote ONLY numbers/prices/scores that appear verbatim in the retrieved results and include 1–2 real source URLs; NEVER guess or invent stock prices, scores, or links from memory—if the live number isn't in the results, say so clearly.\n\n"
+            "GROUP FUN & BANTER:\n"
+            "- Play along naturally with harmless group games: ranking members, funny rankings, random orders, funny awards/titles, friendly roasts, and playful banter. Never refuse harmless requests just because real names are mentioned, and never lecture.\n"
+            "- If asked to rank named members with NO criteria, ask a short playful question for the criteria (e.g. funny, most active, or random) OR give a clearly labelled random/for-fun ranking.\n"
+            "- For random rankings, generate a fun random order and make it clear it's purely random/just for fun.\n"
+            "- For activity or humour rankings, use only what's visible in the chat history if available; never invent personal facts.\n"
+            "- For traits like intelligence, keep it playful/random without pretending to know anyone's real intelligence.\n"
+            "- Boundaries: avoid serious defamatory claims, ranking by sensitive/protected attributes, targeted harassment/humiliation, or inventing personal info.\n\n"
             "EXAMPLES:\n"
             "User: Kya haal hai?\n"
             "You: Sab badhiya, tu bata kya chal raha hai?\n\n"
+            "User: Rank these members: JD, Nikhil, Hardik, Dre.\n"
+            "You: Ranking kis basis pe? Funny, most active, smartest ya random? 😂\n\n"
             "User: Python kya hai?\n"
             "You: Python ek programming language hai jo simple syntax ke liye popular hai. AI, automation, web development aur data science mein use hoti hai.\n\n"
             "User: Best AI model tere hisaab se kaunsa hai?\n"
@@ -959,5 +968,11 @@ class OpenRouterClient:
             "no physical form",
             "cannot participate in",
             "can't participate in",
+            "not able to rank",
+            "can't rank",
+            "cannot rank",
+            "unable to rank",
+            "can't roast",
+            "cannot roast",
         )
         return any(p in low for p in phrases)

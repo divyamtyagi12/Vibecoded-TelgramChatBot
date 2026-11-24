@@ -6,6 +6,7 @@ import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 import logging
+import re
 import secrets
 
 # pyrefly: ignore[missing-import]
@@ -17,6 +18,38 @@ from telegram_ai.config import Settings
 from telegram_ai.handlers import TelegramAIHandlers, register_handlers
 from telegram_ai.openrouter import OpenRouterClient
 from telegram_ai.storage import create_repository
+
+_LOG_SECRET_PATTERNS = (
+    (re.compile(r"bot\d+:[A-Za-z0-9_-]+"), "bot[REDACTED_TOKEN]"),
+    (re.compile(r"sk-or-v1-[A-Za-z0-9_-]+"), "[REDACTED_KEY]"),
+    (re.compile(r"gsk_[A-Za-z0-9_-]+"), "[REDACTED_KEY]"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9._-]+", re.IGNORECASE), "Bearer [REDACTED]"),
+)
+
+
+class _SecretRedactingFilter(logging.Filter):
+    """Prevent Telegram bot tokens and API keys from ever appearing in runtime logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+            redacted = rendered
+            for pat, repl in _LOG_SECRET_PATTERNS:
+                redacted = pat.sub(repl, redacted)
+            if redacted != rendered:
+                record.msg = redacted
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+# Silence httpx/httpcore INFO logs (which otherwise print full Telegram Bot API token URLs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+_root_logger = logging.getLogger()
+if not any(isinstance(f, _SecretRedactingFilter) for f in _root_logger.filters):
+    _root_logger.addFilter(_SecretRedactingFilter())
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +121,13 @@ async def receive_update(
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     await _ensure_initialized()
-    payload = await request.json()
-    update_id = payload.get("update_id") if isinstance(payload, dict) else None
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object")
+    update_id = payload.get("update_id")
     if isinstance(update_id, int):
         if update_id in _seen_update_ids:
             logger.info("Ignoring duplicate Telegram webhook update_id=%s", update_id)
@@ -99,8 +137,10 @@ async def receive_update(
             _seen_update_ids.popitem(last=False)
 
     update = Update.de_json(payload, telegram_application.bot)
-    chat_id = update.effective_chat.id if update and update.effective_chat else None
-    msg_id = update.effective_message.message_id if update and update.effective_message else None
+    if update is None:
+        return {"ok": True}
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    msg_id = update.effective_message.message_id if update.effective_message else None
     logger.info("Processing webhook update_id=%s chat_id=%s msg_id=%s", update_id, chat_id, msg_id)
     try:
         await telegram_application.process_update(update)

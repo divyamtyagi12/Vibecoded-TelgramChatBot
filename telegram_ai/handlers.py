@@ -29,6 +29,37 @@ from telegram_ai.vision import MAX_IMAGE_BYTES, download_telegram_image
 
 logger = logging.getLogger(__name__)
 MAX_PHOTO_BYTES = MAX_IMAGE_BYTES  # 10 MB limit
+TELEGRAM_MAX_MESSAGE_CHARS = 4000
+
+
+def _split_telegram_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
+    """Split long replies safely within Telegram's 4096-character limit on clean boundaries."""
+    if not text or len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind("\n\n", 0, limit)
+        if cut < limit // 2:
+            cut = remaining.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = remaining.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def _reply_text_safe(message: Message, text: str) -> Any:
+    """Reply to a Telegram message, chunking cleanly if the reply exceeds Telegram's limit."""
+    chunks = _split_telegram_message(text)
+    last_sent = None
+    for chunk in chunks:
+        last_sent = await message.reply_text(chunk)
+    return last_sent
 
 _GENERIC_IMAGE_QUERY_RE = re.compile(
     r"^(?:please\s+)?(?:"
@@ -459,7 +490,7 @@ class TelegramAIHandlers:
                 return
 
         # Send reply and track bot response
-        sent = await message.reply_text(reply)
+        sent = await _reply_text_safe(message, reply)
         if settings.memory_enabled:
             msg_to_store = current_msg
             if replied_image_file_id:
@@ -682,7 +713,7 @@ class TelegramAIHandlers:
             quote_text=current_msg.quote_text,
         )
 
-        sent = await message.reply_text(reply)
+        sent = await _reply_text_safe(message, reply)
         if settings.memory_enabled:
             self.repository.add_context(chat_id, current_msg)
             sent_msg_id = sent.message_id if sent and isinstance(getattr(sent, "message_id", None), int) else None
@@ -904,7 +935,7 @@ class TelegramAIHandlers:
             await message.reply_text("I couldn't reach the AI service just now. Please try again shortly.")
             return True
 
-        sent = await message.reply_text(reply)
+        sent = await _reply_text_safe(message, reply)
         if settings.memory_enabled:
             # Clear failed operation on previous message and record new response
             if target_msg_id:

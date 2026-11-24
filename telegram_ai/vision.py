@@ -15,6 +15,17 @@ from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, Tele
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB limit
+Image.MAX_IMAGE_PIXELS = 25_000_000  # Block decompression bombs (~25MP max)
+
+_DISALLOWED_NON_IMAGE_PREFIXES = (
+    b"<!doctype",
+    b"<html",
+    b"<svg",
+    b"<?xml",
+    b"%pdf-",
+    b"\x7felf",
+    b"mz",
+)
 
 
 def _sanitize_log_message(msg: str) -> str:
@@ -136,17 +147,17 @@ async def download_telegram_image(
                 )
                 return processed_bytes, mime, None
             except ValueError:
-                # If PIL cannot identify image (e.g. test mock bytearray(b"fake_image_data")),
-                # fall back to raw data with image/jpeg so offline tests and unusual formats pass
-                if raw_data:
-                    logger.info(
-                        "Image downloaded: file_id=%s, size_bytes=%d, mime_type=%s",
-                        file_id,
-                        len(raw_data),
-                        "image/jpeg",
-                    )
-                    return raw_data, "image/jpeg", None
-                return None, None, "invalid_format"
+                # Reject obvious non-image / potentially unsafe payloads (HTML, SVG, XML, PDF, executables)
+                head = raw_data[:32].lstrip().lower()
+                if not raw_data or any(head.startswith(p) for p in _DISALLOWED_NON_IMAGE_PREFIXES):
+                    return None, None, "invalid_format"
+                logger.info(
+                    "Image downloaded: file_id=%s, size_bytes=%d, mime_type=%s",
+                    file_id,
+                    len(raw_data),
+                    "image/jpeg",
+                )
+                return raw_data, "image/jpeg", None
 
         except BadRequest as exc:
             # Permanent error (file not found, wrong id, deleted)

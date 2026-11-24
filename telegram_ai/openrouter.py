@@ -84,13 +84,17 @@ _TOOLS = [
 
 _LIVE_KEYWORDS_RE = re.compile(
     r"\b("
-    r"live|score|scorecard|train|pnr|running\s+status|timing|match|test\s+match|next\s+match|"
-    r"schedule|fixture|series|ind\s+vs|ind\s+nz|who\s+won|winner|champion|finals?|semi[- ]?finals?|"
+    r"live|live\s+score|cricket\s+score|match\s+score|scorecard|"
+    r"train\s+(?:status|running|number|\d+)|running\s+status|irctc|pnr|timing|"
+    r"cricket\s+match|football\s+match|next\s+match|test\s+match|ipl\s+match|match\s+(?:result|schedule|today|live)|"
+    r"schedule|fixture|cricket\s+series|test\s+series|odi\s+series|t20\s+series|ind\s+vs|ind\s+nz|who\s+won|winner|champion|finals?|semi[- ]?finals?|"
     r"tournament|on\s*going|ongoing|standings?|points?\s+table|leaderboard|qualifiers?|"
     r"ffws|free\s+fire|bgmi|bmps|bgis|pmgc|valorant|vct|esports|world\s+cup|world\s+series|"
-    r"cricket|football|ipl|f1|weather|today|current\s+time|currently|right\s+now|2025|2026|2027|"
+    r"cricket|football|ipl|f1\s+(?:timing|race|qualifying|standings|results?|live|schedule|gp)|formula\s+1|"
+    r"weather|today|current\s+time|currently|right\s+now|2025|2026|2027|"
     r"news|latest|breaking|recent|new\s+episode|episode\s+release|release\s+date|"
-    r"stock|stocks|share\s+price|shares|price|quote|market|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|gold\s+price|silver\s+price|"
+    r"stock|stocks|share\s+price|shares|(?:stock|share|gold|silver|bitcoin|btc|eth|crypto)\s+price|price\s+today|current\s+price|"
+    r"quote|(?:stock|share|us|indian)\s+market|market\s+(?:open|close|closed|today|crash|rally)|earnings|crypto|bitcoin|btc|eth|nvda|nvidia|nvidi|nifty|sensex|"
     r"verify|fact[- ]?check|real\s+or\s+fake|is\s+this\s+true|rumou?r|sources?|official\s+website|"
     r"gemini|claude|chatgpt|gpt-?\d|openai\s+model|anthropic|deepseek|grok|qwen|llama\s*\d|nemotron|"
     r"best\s+(?:ai\s+)?model|model\s+ranking|ai\s+model|llm\s+ranking|latest\s+model"
@@ -98,11 +102,17 @@ _LIVE_KEYWORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EXPLICIT_LIVE_OVERRIDE_RE = re.compile(
+    r"\b(latest|today|2025|2026|2027|news|breaking|live\s+score|stock\s+price|verify|fact[- ]?check|official\s+website)\b",
+    re.IGNORECASE,
+)
+
 _FOLLOWUP_CONTEXT_RE = re.compile(
     r"^(?:"
     r"what\s+about\b|how\s+about\b|and\s+what\s+about\b|aur\s+[\w\s]{1,30}\??$|"
     r"why\s+(?:this|that|so)\b|what\s+else\b|continue\b|explain\s+more\b|"
-    r"tell\s+me\s+more\b|more\s+about\b"
+    r"tell\s+me\s+more\b|more\s+about\b|which\s+one\b|which\s+is\s+better\b|compare\s+them\b|"
+    r"(?:anyway\s+)?back\s+to\b|earlier\s+you\s+said\b"
     r")",
     re.IGNORECASE,
 )
@@ -161,9 +171,13 @@ def needs_web_search(prompt: str, context: list[ConversationMessage] | None = No
     clean = (prompt or "").strip()
     if not clean or _CASUAL_ONLY_RE.match(clean):
         return False
+    # Coding requests ("Write a Python script using ChatGPT API", "Python match-case") should NOT trigger search
+    # unless explicitly asking for latest/news/2026/verification.
+    if _CODE_KEYWORDS_RE.search(clean) and not _EXPLICIT_LIVE_OVERRIDE_RE.search(clean):
+        return False
     if _LIVE_KEYWORDS_RE.search(clean):
         return True
-    # Inherit live-search intent on short follow-ups ("What about Argon Hydrogen Neon?", "2026", "Ind nz")
+    # Inherit live-search intent on short follow-ups ("What about Argon Hydrogen Neon?", "Which one is better?")
     # or user corrections ("I meant the model.", "Model bhi h Gemini k.") when recent turns are a live/model topic.
     is_contextual_followup = (
         len(clean.split()) <= 4
@@ -247,8 +261,24 @@ def _redact_secrets(text: str) -> str:
     return redacted
 
 
+def _strip_latex_for_telegram(text: str) -> str:
+    """Convert raw LaTeX math into clean Telegram-readable text while preserving fenced code blocks."""
+    segments = re.split(r"(```[\s\S]*?```)", text)
+    for idx in range(0, len(segments), 2):
+        seg = segments[idx]
+        # \frac{a}{b} -> a/b
+        seg = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"\1/\2", seg)
+        seg = seg.replace(r"\times", "×").replace(r"\cdot", "·").replace(r"\div", "÷").replace(r"\pm", "±")
+        # Display math $$...$$ -> inner content
+        seg = re.sub(r"\$\$([^$]+?)\$\$", lambda m: m.group(1).strip(), seg)
+        # Inline math $x$ or $2x + 6 = 18$ (skip currency like $1.10 or $842.15)
+        seg = re.sub(r"\$(?!\d+(?:[.,]\d+)?(?:\s|$|\b))([^$\n]{1,60}?)\$", lambda m: m.group(1).strip(), seg)
+        segments[idx] = seg
+    return "".join(segments)
+
+
 def _clean_chat_response(text: str) -> str:
-    """Clean robotic intro/outro filler while preserving all factual content, markdown, and code."""
+    """Clean robotic intro/outro filler and raw LaTeX while preserving all factual content, markdown, and code."""
     if not text:
         return text
 
@@ -265,6 +295,9 @@ def _clean_chat_response(text: str) -> str:
 
     # Remove hallucinated internal citation markers like 【3†L1-L3】
     text = re.sub(r"【[^】]*】", "", text)
+
+    # Clean raw LaTeX math that Telegram cannot render (preserving code blocks & currency)
+    text = _strip_latex_for_telegram(text)
 
     # Remove trailing robotic sign-offs if present on their own line at the end
     trailing_patterns = (
@@ -342,8 +375,9 @@ class OpenRouterClient:
             "- Detailed/complex/code: go longer ONLY when the user asks for detail, code, or a complex topic.\n\n"
             "STYLE & FORMATTING:\n"
             "- Start directly with the answer. No intros ('Sure!', 'Certainly!', 'Here's a breakdown'), no sign-offs, no unsolicited suggestions at the end, no repeating the question.\n"
-            "- Match the user's language (English or Hinglish in Roman script; never Devanagari unless asked).\n"
+            "- STRICT LANGUAGE MATCH: If the user writes in English, reply ONLY in English (do NOT mix Hindi/Hinglish words). Reply in Hinglish (Roman script) ONLY when the user writes in Hinglish or Hindi. Never use Devanagari unless explicitly asked.\n"
             "- Plain prose by default: no headings, no random bolding, no tables unless asked, no bullet points unless listing multiple items truly helps.\n"
+            "- Telegram does not render LaTeX—never write $...$, $$...$$, or \\frac{}{}; write math cleanly in plain text/Unicode (e.g., 2x = 12, x = 6, O(n)).\n"
             "- Use contractions and natural phrasing. Don't force emojis. Admit if you don't know.\n"
             "- Speaker labels like '[Speaker: UserName]' are metadata only—never treat the speaker's name as the topic. Always interpret ambiguous words ('What about Argon, Hydrogen, Neon?') within the active conversation topic, not in isolation. If the user corrects you ('I meant the model', 'Model bhi h Gemini k'), re-answer their earlier question with the corrected meaning—never repeat your old answer. If truly unclear with no context, ask a short clarification.\n"
             "- For current AI model rankings or codenames, rely on live search results, distinguish released models from experimental/internal codenames, and never invent model names or assume outdated versions (like Gemini 1.5) are current.\n"
@@ -358,16 +392,16 @@ class OpenRouterClient:
             "- For traits like intelligence, keep it playful/random without pretending to know anyone's real intelligence.\n"
             "- Boundaries: avoid serious defamatory claims, ranking by sensitive/protected attributes, targeted harassment/humiliation, or inventing personal info.\n\n"
             "EXAMPLES:\n"
-            "User: Kya haal hai?\n"
-            "You: Sab badhiya, tu bata kya chal raha hai?\n\n"
-            "User: Rank these members: MemberA, MemberB, MemberC.\n"
-            "You: Ranking kis basis pe? Funny, most active, smartest ya random? 😂\n\n"
-            "User: Python kya hai?\n"
-            "You: Python ek programming language hai jo simple syntax ke liye popular hai. AI, automation, web development aur data science mein use hoti hai.\n\n"
-            "User: Best AI model tere hisaab se kaunsa hai?\n"
-            "You: Overall OpenAI, Google aur Anthropic top contenders hain. Reasoning, coding aur multimodal capabilities ke hisaab se winner change hota hai.\n\n"
+            "User: Hey, what's up?\n"
+            "You: Not much, just hanging out—what's going on?\n\n"
             "User: Why is the sky blue?\n"
             "You: Sunlight scatters in Earth's atmosphere, and blue light scatters much more than red light because of its shorter wavelength.\n\n"
+            "User: Kya haal hai?\n"
+            "You: Sab badhiya, tu bata kya chal raha hai?\n\n"
+            "User: Python kya hai?\n"
+            "You: Python ek programming language hai jo simple syntax ke liye popular hai. AI, automation, web development aur data science mein use hoti hai.\n\n"
+            "User: Rank these members: MemberA, MemberB, MemberC.\n"
+            "You: What should we rank them on—funniest, most active, or totally random?\n\n"
             f"Group style: {settings.response_style}"
         )
 
@@ -377,11 +411,20 @@ class OpenRouterClient:
         is_code = bool(_CODE_KEYWORDS_RE.search(prompt))
         is_detailed = bool(_DETAILED_KEYWORDS_RE.search(prompt))
         requires_search = needs_web_search(prompt, context)
+        has_code_context = bool(
+            context
+            and any(
+                m.text and ("```" in m.text or _CODE_KEYWORDS_RE.search(m.text))
+                for m in context[-3:]
+            )
+        )
 
         if is_code:
             answer_max_tokens = 2500
         elif is_detailed:
             answer_max_tokens = 2000
+        elif has_code_context and not requires_search:
+            answer_max_tokens = 600
         elif requires_search:
             answer_max_tokens = 350
         else:
@@ -467,14 +510,17 @@ class OpenRouterClient:
         tool_used = False
         msg = {}
         for step in range(2):
-            msg = await self._chat_completion(
-                messages,
-                tools=_TOOLS,
-                tool_choice="auto",
-                max_tokens=answer_max_tokens,
-                temperature=0.5,
-            )
-            tool_calls = msg.get("tool_calls")
+            # Step 0 allows tool calling; Step 1 (after tool results) synthesizes directly without extra tool loops
+            call_kwargs: dict[str, Any] = {
+                "max_tokens": answer_max_tokens,
+                "temperature": 0.5,
+            }
+            if step == 0:
+                call_kwargs["tools"] = _TOOLS
+                call_kwargs["tool_choice"] = "auto"
+
+            msg = await self._chat_completion(messages, **call_kwargs)
+            tool_calls = msg.get("tool_calls") if step == 0 else None
             if not tool_calls:
                 answer_text = (msg.get("content") or "").strip()
                 if answer_text:
@@ -489,7 +535,13 @@ class OpenRouterClient:
                 break
 
             tool_used = True
-            messages.append(msg)
+            # Strip non-standard provider fields (e.g., Groq 'reasoning') before re-sending assistant tool_calls
+            sanitized_assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": tool_calls,
+            }
+            messages.append(sanitized_assistant_msg)
             for tc in tool_calls:
                 fname = tc.get("function", {}).get("name")
                 call_id = tc.get("id", "")
@@ -640,11 +692,10 @@ class OpenRouterClient:
             "You are a natural, intelligent person chatting in a Telegram group with vision capabilities. "
             "You analyze images, screenshots, code snippets, mathematics, anime/movies, memes, documents, and everyday photos.\n\n"
             "CONVERSATION & TONE:\n"
-            "- Respond like a real human in a Telegram chat: natural, authentic, relaxed, and direct.\n"
-            "- STRICT LANGUAGE RULE: Reply ONLY in English or Hinglish (Hindi written in Roman/English alphabet). NEVER reply in pure Hindi or Devanagari script (हिंदी), and NEVER reply in any other language unless the user explicitly asks you to reply in or translate into that specific language.\n"
-            "- If a user messages in English, reply in English. If a user messages in Hinglish or Hindi, reply in Hinglish (Roman script) or English.\n"
-            "- NEVER use greetings or introductory filler (no 'Hello!', 'Certainly!', 'Sure!').\n"
-            "- NEVER use robotic conclusion fluff (no 'Hope this helps!', 'Let me know!').\n\n"
+            "- Respond like a real human in a Telegram chat: natural, concise (2–5 sentences unless code/math working needs more), authentic, and direct.\n"
+            "- STRICT LANGUAGE MATCH: If the user writes in English, reply strictly in English. If the user writes in Hinglish or Hindi, reply in Hinglish (Roman script). NEVER reply in pure Hindi/Devanagari script unless explicitly asked.\n"
+            "- Telegram does not render LaTeX—never output $...$, $$...$$, or \\frac{}{}; write equations cleanly in plain text/Unicode (e.g., 2x = 12, x = 6).\n"
+            "- NEVER use headings ('**The Problem:**', '**The Fix:**'), greetings ('Hello!', 'Certainly!', 'Sure!'), or robotic sign-offs ('Hope this helps!').\n\n"
             "SPEAKER METADATA RULES:\n"
             "- The speaker labels (such as '[Speaker: UserA]', '[Speaker: UserB]') indicate who is speaking in the chat.\n"
             "- The speaker's name is strictly metadata. NEVER treat the speaker's name as the subject, topic, or question!\n"

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import re
+import socket
 from typing import Any
+from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
 
 from lxml import html
@@ -140,6 +143,50 @@ _OFFICIAL_HINTS = (
     "openai.com",
     "irctc.co.in",
 )
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """Block SSRF against loopback, private, link-local, metadata, or non-HTTP(S) endpoints."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "localhost.localdomain", "metadata.google.internal"} or host.endswith(
+        (".local", ".internal", ".localhost")
+    ):
+        return False
+    if parsed.port is not None and parsed.port not in (80, 443):
+        return False
+
+    # Check direct IP literal first
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_global
+    except ValueError:
+        pass
+
+    # Resolve DNS and verify every returned IP is globally routable (not private/loopback/link-local)
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            if not ip.is_global:
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def extract_official_urls(search_text: str, max_urls: int = 2) -> list[str]:
@@ -281,7 +328,8 @@ class WebSearchClient:
                 link = (item.findtext("link") or "").strip()
                 pub_date = (item.findtext("pubDate") or "").strip()
                 line = f"- {title} ({pub_date})" if pub_date else f"- {title}"
-                if link:
+                # Omit massive base64 Google News redirect URLs so the AI cites clean direct links
+                if link and "news.google.com/rss/articles/" not in link.lower():
                     line += f"\n  URL: {link}"
                 lines.append(line)
             return "\n".join(lines)
@@ -408,19 +456,22 @@ class WebSearchClient:
             return None
 
     async def fetch_page(self, url: str, max_chars: int = 2500) -> str:
-        """Fetch and extract readable text from a URL for deep details."""
+        """Fetch and extract readable text from a public HTTP(S) URL with SSRF protection."""
         clean_url = url.strip()
         if not clean_url or not clean_url.startswith(("http://", "https://")):
             return "Invalid URL provided."
+        if not await asyncio.to_thread(_is_safe_public_url, clean_url):
+            logger.warning("Blocked unsafe/private URL fetch attempt: %s", clean_url)
+            return "Blocked unsafe or private URL."
 
         logger.info("Fetching webpage text from: %s", clean_url)
         html_text = None
         if _HAS_PRIMP:
             try:
                 def _do_primp_get() -> str | None:
-                    client = primp.Client(timeout=int(self.timeout_seconds))
+                    client = primp.Client(timeout=int(self.timeout_seconds), follow_redirects=False)
                     res = client.get(clean_url)
-                    if res.status_code < 400:
+                    if 200 <= res.status_code < 300:
                         return res.text
                     return None
                 html_text = await asyncio.to_thread(_do_primp_get)
@@ -429,10 +480,23 @@ class WebSearchClient:
 
         if not html_text:
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
-                    resp = await client.get(clean_url, headers=_HEADERS)
-                if resp.status_code < 400:
-                    html_text = resp.text
+                target_url = clean_url
+                async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=False) as client:
+                    for _ in range(4):
+                        resp = await client.get(target_url, headers=_HEADERS)
+                        if resp.status_code in (301, 302, 303, 307, 308):
+                            loc = resp.headers.get("location")
+                            if not loc:
+                                break
+                            next_url = urljoin(target_url, loc)
+                            if not await asyncio.to_thread(_is_safe_public_url, next_url):
+                                logger.warning("Blocked redirect to unsafe/private URL: %s", next_url)
+                                return "Blocked unsafe or private URL."
+                            target_url = next_url
+                            continue
+                        if resp.status_code < 400:
+                            html_text = resp.text
+                        break
             except Exception as exc:
                 logger.warning("httpx get failed for %s: %s", clean_url, exc)
 

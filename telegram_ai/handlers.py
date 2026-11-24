@@ -475,6 +475,7 @@ class TelegramAIHandlers:
                     media_file_id=replied_image_file_id,
                     media_summary=image_summary,
                     quote_text=current_msg.quote_text,
+                    chat_id=chat_id,
                 )
 
             self.repository.add_context(chat_id, msg_to_store)
@@ -555,6 +556,7 @@ class TelegramAIHandlers:
             media_file_id=file_id,
             media_unique_id=file_unique_id,
             quote_text=quote_text,
+            chat_id=chat_id,
         )
 
         if not should_reply(settings, is_mentioned=is_mentioned, is_reply_to_bot=is_reply_to_bot):
@@ -654,6 +656,7 @@ class TelegramAIHandlers:
                         is_bot=True,
                         media_type="text",
                         failed_operation=failed_op,
+                        chat_id=chat_id,
                     ),
                 )
             return
@@ -694,6 +697,7 @@ class TelegramAIHandlers:
                     thread_id=t_id,
                     is_bot=True,
                     media_type="text",
+                    chat_id=chat_id,
                 ),
             )
 
@@ -919,6 +923,7 @@ class TelegramAIHandlers:
                     thread_id=current_msg.thread_id,
                     is_bot=True,
                     media_type="text",
+                    chat_id=chat_id,
                 ),
             )
         return True
@@ -970,6 +975,7 @@ class TelegramAIHandlers:
                 media_type=media_type,
                 media_file_id=file_id,
                 media_unique_id=file_unique_id,
+                chat_id=chat_id,
             ),
         )
 

@@ -979,5 +979,6 @@ class OpenRouterClient:
             "unable to rank",
             "can't roast",
             "cannot roast",
+            "privacy ka dhyan",
         )
         return any(p in low for p in phrases)

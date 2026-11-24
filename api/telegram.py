@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 import logging
@@ -36,16 +37,20 @@ handlers = TelegramAIHandlers(
 telegram_application = Application.builder().token(settings.telegram_bot_token).build()
 register_handlers(telegram_application, handlers)
 _seen_update_ids: OrderedDict[int, None] = OrderedDict()
+_init_lock = asyncio.Lock()
 
 
 async def _ensure_initialized() -> None:
-    if not getattr(telegram_application, "_initialized", False):
-        await telegram_application.initialize()
-        try:
-            await handlers.configure(telegram_application)
-        except Exception:
-            logger.warning("Could not configure bot commands on cold start", exc_info=True)
-        await telegram_application.start()
+    if getattr(telegram_application, "_initialized", False):
+        return
+    async with _init_lock:
+        if not getattr(telegram_application, "_initialized", False):
+            await telegram_application.initialize()
+            try:
+                await handlers.configure(telegram_application)
+            except Exception:
+                logger.warning("Could not configure bot commands on cold start", exc_info=True)
+            await telegram_application.start()
 
 
 @asynccontextmanager
@@ -94,8 +99,11 @@ async def receive_update(
             _seen_update_ids.popitem(last=False)
 
     update = Update.de_json(payload, telegram_application.bot)
+    chat_id = update.effective_chat.id if update and update.effective_chat else None
+    msg_id = update.effective_message.message_id if update and update.effective_message else None
+    logger.info("Processing webhook update_id=%s chat_id=%s msg_id=%s", update_id, chat_id, msg_id)
     try:
         await telegram_application.process_update(update)
     except Exception:
-        logger.exception("Unhandled error while processing Telegram update")
+        logger.exception("Unhandled error while processing Telegram update (chat_id=%s)", chat_id)
     return {"ok": True}

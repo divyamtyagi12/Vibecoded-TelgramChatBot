@@ -213,10 +213,24 @@ class TelegramAIHandlers:
     # Message Handlers                                                   #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _is_ignored_sender(message: Message) -> bool:
+        """Ignore messages from bots except Telegram's anonymous group admin proxy (id 1087968824)."""
+        sender = message.from_user
+        if sender is None:
+            return True
+        if not sender.is_bot:
+            return False
+        # Telegram delivers anonymous group admin messages as GroupAnonymousBot (1087968824) with sender_chat set
+        sender_chat = getattr(message, "sender_chat", None)
+        if sender_chat is not None and getattr(sender, "id", None) == 1087968824:
+            return False
+        return True
+
     async def respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
         chat = update.effective_chat
-        if not message or not chat or not message.text or message.from_user is None or message.from_user.is_bot:
+        if not message or not chat or not message.text or self._is_ignored_sender(message):
             return
 
         chat_id = chat.id
@@ -305,6 +319,7 @@ class TelegramAIHandlers:
         # Discover referenced image (direct reply or in ancestor chain)   #
         # -------------------------------------------------------------- #
         replied_image_file_id, image_media_type, image_source_msg = find_image_in_conversation(
+            # pyrefly: ignore[bad-argument-type]
             message, chat_id, self.repository
         )
         if replied_image_file_id:
@@ -329,6 +344,7 @@ class TelegramAIHandlers:
 
         # Build conversation context
         history = assemble_context(
+            # pyrefly: ignore[bad-argument-type]
             self.repository,
             chat_id,
             current_msg,
@@ -482,7 +498,7 @@ class TelegramAIHandlers:
     async def photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
         chat = update.effective_chat
-        if not message or not chat or message.from_user is None or message.from_user.is_bot:
+        if not message or not chat or self._is_ignored_sender(message):
             return
 
         # Check for photo or document image
@@ -591,6 +607,7 @@ class TelegramAIHandlers:
                 )
             else:
                 history = assemble_context(
+                    # pyrefly: ignore[bad-argument-type]
                     self.repository,
                     chat_id,
                     current_msg,
@@ -816,6 +833,7 @@ class TelegramAIHandlers:
 
         # If no explicit failed operation found, check if an image is in the reply chain
         if not failed_op_raw:
+            # pyrefly: ignore[bad-argument-type]
             image_fid, _, _ = find_image_in_conversation(message, chat_id, self.repository)
             if image_fid:
                 failed_op_raw = json.dumps({
@@ -857,6 +875,7 @@ class TelegramAIHandlers:
             return True
 
         history = assemble_context(
+            # pyrefly: ignore[bad-argument-type]
             self.repository,
             chat_id,
             current_msg,

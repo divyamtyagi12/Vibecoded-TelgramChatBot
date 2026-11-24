@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from os import PathLike
 from typing import Any
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class SQLiteRepository:
     def __init__(self, path: str | PathLike[str]) -> None:
+        self._lock = threading.RLock()
         resolved = self._resolve_path(path)
         self.connection = sqlite3.connect(resolved, check_same_thread=False, timeout=30.0)
         self.connection.row_factory = sqlite3.Row
@@ -39,6 +41,8 @@ class SQLiteRepository:
 
     def _create_schema(self) -> None:
         """Ensure initial tables exist and apply non-destructive schema migrations."""
+        if not hasattr(self, "_lock"):
+            self._lock = threading.RLock()
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS group_settings (
@@ -107,137 +111,141 @@ class SQLiteRepository:
         self.connection.commit()
 
     def get_settings(self, chat_id: int) -> GroupSettings:
-        row = self.connection.execute(
-            "SELECT * FROM group_settings WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        if row is None:
-            settings = GroupSettings(chat_id=chat_id)
-            self.save_settings(settings)
-            return settings
-        return GroupSettings(
-            chat_id=row["chat_id"],
-            response_style=row["response_style"],
-            participation_mode=ParticipationMode(row["participation_mode"]),
-            memory_enabled=bool(row["memory_enabled"]),
-        )
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM group_settings WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            if row is None:
+                settings = GroupSettings(chat_id=chat_id)
+                self.save_settings(settings)
+                return settings
+            return GroupSettings(
+                chat_id=row["chat_id"],
+                response_style=row["response_style"],
+                participation_mode=ParticipationMode(row["participation_mode"]),
+                memory_enabled=bool(row["memory_enabled"]),
+            )
 
     def save_settings(self, settings: GroupSettings) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO group_settings (chat_id, response_style, participation_mode, memory_enabled)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                response_style = excluded.response_style,
-                participation_mode = excluded.participation_mode,
-                memory_enabled = excluded.memory_enabled
-            """,
-            (
-                settings.chat_id,
-                settings.response_style,
-                settings.participation_mode.value,
-                settings.memory_enabled,
-            ),
-        )
-        self.connection.commit()
+        with self._lock:
+            self.connection.execute(
+                """
+                INSERT INTO group_settings (chat_id, response_style, participation_mode, memory_enabled)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    response_style = excluded.response_style,
+                    participation_mode = excluded.participation_mode,
+                    memory_enabled = excluded.memory_enabled
+                """,
+                (
+                    settings.chat_id,
+                    settings.response_style,
+                    settings.participation_mode.value,
+                    settings.memory_enabled,
+                ),
+            )
+            self.connection.commit()
 
     def add_context(self, chat_id: int, message: ConversationMessage) -> None:
         """Store or update a message in the conversation repository safely."""
-        try:
-            c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
-            m_id = int(message.message_id) if isinstance(message.message_id, (int, float)) else None
-            s_id = int(message.sender_id) if isinstance(message.sender_id, (int, float)) else None
-            r_id = int(message.reply_to_message_id) if isinstance(message.reply_to_message_id, (int, float)) else None
-            t_id = int(message.thread_id) if isinstance(message.thread_id, (int, float)) else None
+        with self._lock:
+            try:
+                c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
+                m_id = int(message.message_id) if isinstance(message.message_id, (int, float)) else None
+                s_id = int(message.sender_id) if isinstance(message.sender_id, (int, float)) else None
+                r_id = int(message.reply_to_message_id) if isinstance(message.reply_to_message_id, (int, float)) else None
+                t_id = int(message.thread_id) if isinstance(message.thread_id, (int, float)) else None
 
-            author = (str(message.author or ""))[:128]
-            text = (str(message.text or ""))[:4000]
-            quote_text = (str(message.quote_text))[:1000] if isinstance(message.quote_text, str) else None
-            media_summary = (str(message.media_summary))[:2000] if isinstance(message.media_summary, str) else None
-            media_type = str(message.media_type) if isinstance(message.media_type, str) else None
-            media_file_id = str(message.media_file_id) if isinstance(message.media_file_id, str) else None
-            media_unique_id = str(message.media_unique_id) if isinstance(message.media_unique_id, str) else None
-            conversation_id = str(message.conversation_id)[:128] if isinstance(message.conversation_id, str) else None
-            failed_operation = str(message.failed_operation)[:2000] if isinstance(message.failed_operation, str) else None
+                author = (str(message.author or ""))[:128]
+                text = (str(message.text or ""))[:4000]
+                quote_text = (str(message.quote_text))[:1000] if isinstance(message.quote_text, str) else None
+                media_summary = (str(message.media_summary))[:2000] if isinstance(message.media_summary, str) else None
+                media_type = str(message.media_type) if isinstance(message.media_type, str) else None
+                media_file_id = str(message.media_file_id) if isinstance(message.media_file_id, str) else None
+                media_unique_id = str(message.media_unique_id) if isinstance(message.media_unique_id, str) else None
+                conversation_id = str(message.conversation_id)[:128] if isinstance(message.conversation_id, str) else None
+                failed_operation = str(message.failed_operation)[:2000] if isinstance(message.failed_operation, str) else None
 
-            if m_id is not None:
-                self.connection.execute(
-                    """
-                    INSERT INTO conversation_context (
-                        chat_id, message_id, sender_id, author, text,
-                        reply_to_message_id, thread_id, is_bot,
-                        media_type, media_file_id, media_unique_id,
-                        media_summary, quote_text, conversation_id, failed_operation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(chat_id, message_id) DO UPDATE SET
-                        text = excluded.text,
-                        media_summary = COALESCE(excluded.media_summary, conversation_context.media_summary),
-                        media_file_id = COALESCE(excluded.media_file_id, conversation_context.media_file_id),
-                        media_type = COALESCE(excluded.media_type, conversation_context.media_type),
-                        quote_text = COALESCE(excluded.quote_text, conversation_context.quote_text),
-                        conversation_id = COALESCE(excluded.conversation_id, conversation_context.conversation_id),
-                        failed_operation = COALESCE(excluded.failed_operation, conversation_context.failed_operation)
-                    """,
-                    (
-                        c_id,
-                        m_id,
-                        s_id,
-                        author,
-                        text,
-                        r_id,
-                        t_id,
-                        1 if message.is_bot else 0,
-                        media_type,
-                        media_file_id,
-                        media_unique_id,
-                        media_summary,
-                        quote_text,
-                        conversation_id,
-                        failed_operation,
-                    ),
+                if m_id is not None:
+                    self.connection.execute(
+                        """
+                        INSERT INTO conversation_context (
+                            chat_id, message_id, sender_id, author, text,
+                            reply_to_message_id, thread_id, is_bot,
+                            media_type, media_file_id, media_unique_id,
+                            media_summary, quote_text, conversation_id, failed_operation
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                            text = excluded.text,
+                            media_summary = COALESCE(excluded.media_summary, conversation_context.media_summary),
+                            media_file_id = COALESCE(excluded.media_file_id, conversation_context.media_file_id),
+                            media_type = COALESCE(excluded.media_type, conversation_context.media_type),
+                            quote_text = COALESCE(excluded.quote_text, conversation_context.quote_text),
+                            conversation_id = COALESCE(excluded.conversation_id, conversation_context.conversation_id),
+                            failed_operation = COALESCE(excluded.failed_operation, conversation_context.failed_operation)
+                        """,
+                        (
+                            c_id,
+                            m_id,
+                            s_id,
+                            author,
+                            text,
+                            r_id,
+                            t_id,
+                            1 if message.is_bot else 0,
+                            media_type,
+                            media_file_id,
+                            media_unique_id,
+                            media_summary,
+                            quote_text,
+                            conversation_id,
+                            failed_operation,
+                        ),
+                    )
+                else:
+                    self.connection.execute(
+                        """
+                        INSERT INTO conversation_context (
+                            chat_id, author, text, thread_id, is_bot,
+                            media_type, media_file_id, media_unique_id,
+                            media_summary, quote_text, conversation_id, failed_operation
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            c_id,
+                            author,
+                            text,
+                            t_id,
+                            1 if message.is_bot else 0,
+                            media_type,
+                            media_file_id,
+                            media_unique_id,
+                            media_summary,
+                            quote_text,
+                            conversation_id,
+                            failed_operation,
+                        ),
+                    )
+                self.connection.commit()
+            except sqlite3.OperationalError:
+                logger.warning(
+                    "add_context: could not persist context for chat %s (OperationalError)",
+                    chat_id,
+                    exc_info=True,
                 )
-            else:
-                self.connection.execute(
-                    """
-                    INSERT INTO conversation_context (
-                        chat_id, author, text, thread_id, is_bot,
-                        media_type, media_file_id, media_unique_id,
-                        media_summary, quote_text, conversation_id, failed_operation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        c_id,
-                        author,
-                        text,
-                        t_id,
-                        1 if message.is_bot else 0,
-                        media_type,
-                        media_file_id,
-                        media_unique_id,
-                        media_summary,
-                        quote_text,
-                        conversation_id,
-                        failed_operation,
-                    ),
-                )
-            self.connection.commit()
-        except sqlite3.OperationalError:
-            logger.warning(
-                "add_context: could not persist context for chat %s (OperationalError)",
-                chat_id,
-                exc_info=True,
-            )
 
     def get_message(self, chat_id: int, message_id: int) -> ConversationMessage | None:
         """Retrieve a specific message by its Telegram message_id."""
         if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
             return None
-        row = self.connection.execute(
-            "SELECT * FROM conversation_context WHERE chat_id = ? AND message_id = ? ORDER BY id DESC LIMIT 1",
-            (int(chat_id), int(message_id)),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_message(row)
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM conversation_context WHERE chat_id = ? AND message_id = ? ORDER BY id DESC LIMIT 1",
+                (int(chat_id), int(message_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_message(row)
 
     def update_media_summary(self, chat_id: int, message_id: int, summary: str) -> None:
         """Update or cache the visual summary for a stored image message."""
@@ -317,24 +325,25 @@ class SQLiteRepository:
         t_id = int(thread_id) if isinstance(thread_id, (int, float)) else None
         exclude = set(exclude_message_ids) if exclude_message_ids else set()
 
-        if t_id is not None:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM conversation_context
-                WHERE chat_id = ? AND thread_id = ?
-                ORDER BY id DESC LIMIT ?
-                """,
-                (c_id, t_id, limit * 2),
-            ).fetchall()
-        else:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM conversation_context
-                WHERE chat_id = ?
-                ORDER BY id DESC LIMIT ?
-                """,
-                (c_id, limit * 2),
-            ).fetchall()
+        with self._lock:
+            if t_id is not None:
+                rows = self.connection.execute(
+                    """
+                    SELECT * FROM conversation_context
+                    WHERE chat_id = ? AND thread_id = ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (c_id, t_id, limit * 2),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """
+                    SELECT * FROM conversation_context
+                    WHERE chat_id = ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (c_id, limit * 2),
+                ).fetchall()
 
         filtered: list[ConversationMessage] = []
         for row in rows:
@@ -349,10 +358,11 @@ class SQLiteRepository:
 
     def get_context(self, chat_id: int, limit: int) -> list[ConversationMessage]:
         """Retrieve the last `limit` messages chronologically (standard context lookup)."""
-        rows = self.connection.execute(
-            "SELECT * FROM conversation_context WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-            (chat_id, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM conversation_context WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                (chat_id, limit),
+            ).fetchall()
         return [self._row_to_message(row) for row in reversed(rows)]
 
     def cleanup_old_messages(self, retention_days: int = 14) -> int:

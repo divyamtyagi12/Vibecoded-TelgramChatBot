@@ -471,6 +471,20 @@ class OpenRouterClient:
                 temperature=0.6,
             )
             answer_text = (msg.get("content") or "").strip()
+            if not answer_text:
+                # Defense-in-depth: if reasoning consumed the entire budget and returned empty content,
+                # retry once with expanded budget on a non-reasoning model fallback.
+                logger.warning("Empty visible content returned on fast path; retrying with expanded budget")
+                try:
+                    retry_msg = await self._chat_completion(
+                        messages,
+                        max_tokens=max(answer_max_tokens * 4, 800),
+                        temperature=0.6,
+                        force_model=_OPENROUTER_FREE_MODEL if self.is_openrouter else "qwen/qwen3.8-27b",
+                    )
+                    answer_text = (retry_msg.get("content") or "").strip()
+                except Exception:
+                    pass
             if answer_text and not self._is_canned_refusal(answer_text):
                 return _clean_chat_response(answer_text)
             if answer_text and self._is_canned_refusal(answer_text):
@@ -865,10 +879,15 @@ class OpenRouterClient:
                     f"Refusing to call non-free OpenRouter model {model_name!r}; only {_OPENROUTER_FREE_MODEL!r} is allowed."
                 )
 
+            # Reasoning models (Groq gpt-oss) count internal reasoning tokens against max_tokens;
+            # reserve headroom so tricky puzzles/games never exhaust max_tokens with empty visible content.
+            effective_max_tokens = (
+                max(max_tokens + 450, 650) if ("gpt-oss" in model_name and max_tokens < 650) else max_tokens
+            )
             payload: dict[str, Any] = {
                 "model": model_name,
                 "messages": messages,
-                "max_tokens": max_tokens,
+                "max_tokens": effective_max_tokens,
                 "temperature": temperature,
             }
             if self.is_openrouter or "nemotron" in model_name:

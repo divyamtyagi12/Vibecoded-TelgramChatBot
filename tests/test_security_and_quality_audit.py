@@ -231,6 +231,23 @@ class TestQualityReliabilityAndPerformance(unittest.IsolatedAsyncioTestCase):
         self.assertLess(ctx_ms, 50.0, f"Context assembly too slow: {ctx_ms:.2f}ms")
         self.assertLess(detect_ms_avg, 1.0, f"Search detection too slow: {detect_ms_avg:.3f}ms")
 
+    async def test_07_empty_content_reasoning_starvation_recovers_via_retry(self) -> None:
+        client = OpenRouterClient("gsk_test", "openai/gpt-oss-120b", 10.0)
+        calls: list[dict] = []
+
+        async def _fake(messages, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return {"role": "assistant", "content": "", "reasoning": "ran out of tokens thinking"}
+            return {"role": "assistant", "content": "Hardik Sinha is the impostor because 'Khata hu' is not a food."}
+
+        with patch.object(client, "_chat_completion", AsyncMock(side_effect=_fake)):
+            ans = await client.answer("All Clues Revealed! Which food is the impostor?", GroupSettings(chat_id=1), [])
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Hardik Sinha", ans)
+        self.assertGreaterEqual(calls[1]["max_tokens"], 800)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

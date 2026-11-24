@@ -284,6 +284,7 @@ class TelegramAIHandlers:
             is_bot=False,
             media_type="text",
             quote_text=quote_text,
+            chat_id=chat_id,
         )
 
         if not should_reply(settings, is_mentioned=is_mentioned, is_reply_to_bot=is_reply_to_bot):
@@ -492,6 +493,7 @@ class TelegramAIHandlers:
                     media_file_id=replied_image_file_id,
                     media_summary=image_summary,
                     failed_operation=failed_op_data,
+                    chat_id=chat_id,
                 ),
             )
 

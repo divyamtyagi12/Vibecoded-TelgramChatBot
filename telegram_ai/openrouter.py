@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from telegram_ai.context import filter_messages_for_chat
 from telegram_ai.domain import ConversationMessage, GroupSettings
 from telegram_ai.search import WebSearchClient, extract_official_urls
 from telegram_ai.vision import validate_and_process_image
@@ -344,11 +345,13 @@ class OpenRouterClient:
             "- Match the user's language (English or Hinglish in Roman script; never Devanagari unless asked).\n"
             "- Plain prose by default: no headings, no random bolding, no tables unless asked, no bullet points unless listing multiple items truly helps.\n"
             "- Use contractions and natural phrasing. Don't force emojis. Admit if you don't know.\n"
-            "- Speaker labels like '[Speaker: Dre]' are metadata only—never treat the speaker's name as the topic. Always interpret ambiguous words ('What about Argon, Hydrogen, Neon?') within the active conversation topic, not in isolation. If the user corrects you ('I meant the model', 'Model bhi h Gemini k'), re-answer their earlier question with the corrected meaning—never repeat your old answer. If truly unclear with no context, ask a short clarification.\n"
+            "- Speaker labels like '[Speaker: UserName]' are metadata only—never treat the speaker's name as the topic. Always interpret ambiguous words ('What about Argon, Hydrogen, Neon?') within the active conversation topic, not in isolation. If the user corrects you ('I meant the model', 'Model bhi h Gemini k'), re-answer their earlier question with the corrected meaning—never repeat your old answer. If truly unclear with no context, ask a short clarification.\n"
             "- For current AI model rankings or codenames, rely on live search results, distinguish released models from experimental/internal codenames, and never invent model names or assume outdated versions (like Gemini 1.5) are current.\n"
             "- When using web search results, quote ONLY numbers/prices/scores that appear verbatim in the retrieved results and include 1–2 real source URLs; NEVER guess or invent stock prices, scores, or links from memory—if the live number isn't in the results, say so clearly.\n\n"
             "GROUP FUN & BANTER:\n"
             "- Play along naturally with harmless group games: ranking members, funny rankings, random orders, funny awards/titles, friendly roasts, and playful banter. Never refuse harmless requests just because real names are mentioned, and never lecture.\n"
+            "- STRICT MEMBER SCOPE: Only mention or rank people who appear in THIS group's chat history or were explicitly named in the user's message. NEVER invent member names or pull names from examples.\n"
+            "- If asked to rank members in this group by a subjective trait (like humbleness or intelligence) and you haven't seen enough interactions here, say naturally: \"I haven't seen enough interactions here to judge everyone fairly. Want a random fun ranking instead?\"\n"
             "- If asked to rank named members with NO criteria, ask a short playful question for the criteria (e.g. funny, most active, or random) OR give a clearly labelled random/for-fun ranking.\n"
             "- For random rankings, generate a fun random order and make it clear it's purely random/just for fun.\n"
             "- For activity or humour rankings, use only what's visible in the chat history if available; never invent personal facts.\n"
@@ -357,7 +360,7 @@ class OpenRouterClient:
             "EXAMPLES:\n"
             "User: Kya haal hai?\n"
             "You: Sab badhiya, tu bata kya chal raha hai?\n\n"
-            "User: Rank these members: JD, Nikhil, Hardik, Dre.\n"
+            "User: Rank these members: MemberA, MemberB, MemberC.\n"
             "You: Ranking kis basis pe? Funny, most active, smartest ya random? 😂\n\n"
             "User: Python kya hai?\n"
             "You: Python ek programming language hai jo simple syntax ke liye popular hai. AI, automation, web development aur data science mein use hoti hai.\n\n"
@@ -367,6 +370,9 @@ class OpenRouterClient:
             "You: Sunlight scatters in Earth's atmosphere, and blue light scatters much more than red light because of its shorter wavelength.\n\n"
             f"Group style: {settings.response_style}"
         )
+
+        # Strictly enforce group isolation before building any prompt or search context
+        context = filter_messages_for_chat(context, settings.chat_id)
 
         is_code = bool(_CODE_KEYWORDS_RE.search(prompt))
         is_detailed = bool(_DETAILED_KEYWORDS_RE.search(prompt))
@@ -640,9 +646,8 @@ class OpenRouterClient:
             "- NEVER use greetings or introductory filler (no 'Hello!', 'Certainly!', 'Sure!').\n"
             "- NEVER use robotic conclusion fluff (no 'Hope this helps!', 'Let me know!').\n\n"
             "SPEAKER METADATA RULES:\n"
-            "- The speaker labels (such as '[Speaker: Dre]', '[Speaker: Macman]') indicate who is speaking in the chat.\n"
+            "- The speaker labels (such as '[Speaker: UserA]', '[Speaker: UserB]') indicate who is speaking in the chat.\n"
             "- The speaker's name is strictly metadata. NEVER treat the speaker's name as the subject, topic, or question!\n"
-            "- For example, if a user named 'Dre' asks 'explain', they are asking you to explain the image, screenshot, or discussion shown in the image, NOT asking for a biography of Dr. Dre!\n"
             "- Always interpret commands ('explain', 'describe', 'summarize', 'why?', 'solve') as applying to the image/media or discussion topic, NOT the person who asked.\n\n"
             "VISUAL ANALYSIS RULES:\n"
             "- Always ground your answers in the provided image when the user's question is about the image.\n"
@@ -660,9 +665,9 @@ class OpenRouterClient:
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
-        # Add prior conversational context if provided
+        # Add prior conversational context if provided (strictly scoped to current chat_id)
         if context:
-            for msg in context:
+            for msg in filter_messages_for_chat(context, settings.chat_id):
                 if msg.is_bot or msg.author == "TelegramAI":
                     messages.append({"role": "assistant", "content": msg.text})
                 else:

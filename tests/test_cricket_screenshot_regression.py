@@ -352,7 +352,7 @@ class TestCricketScreenshotRegression:
 
             assert "SPEAKER METADATA RULES:" in system_msg
             assert "NEVER treat the speaker's name as the subject" in system_msg
-            assert "Dr. Dre" in system_msg
+            assert "strictly metadata" in system_msg
 
             # Verify image content structure
             user_msg = messages[-1]["content"]

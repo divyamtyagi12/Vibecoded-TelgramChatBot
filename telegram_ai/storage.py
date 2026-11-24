@@ -148,6 +148,13 @@ class SQLiteRepository:
 
     def add_context(self, chat_id: int, message: ConversationMessage) -> None:
         """Store or update a message in the conversation repository safely."""
+        if message.chat_id is not None and isinstance(chat_id, (int, float)) and int(message.chat_id) != int(chat_id):
+            logger.error(
+                "Refusing cross-chat SQLite write: target chat_id=%s, message.chat_id=%s",
+                chat_id,
+                message.chat_id,
+            )
+            return
         with self._lock:
             try:
                 c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
@@ -251,19 +258,20 @@ class SQLiteRepository:
         """Update or cache the visual summary for a stored image message."""
         if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
             return
-        try:
-            self.connection.execute(
-                "UPDATE conversation_context SET media_summary = ? WHERE chat_id = ? AND message_id = ?",
-                (str(summary)[:2000], int(chat_id), int(message_id)),
-            )
-            self.connection.commit()
-        except sqlite3.OperationalError:
-            logger.warning(
-                "update_media_summary: failed for chat %s message %s",
-                chat_id,
-                message_id,
-                exc_info=True,
-            )
+        with self._lock:
+            try:
+                self.connection.execute(
+                    "UPDATE conversation_context SET media_summary = ? WHERE chat_id = ? AND message_id = ?",
+                    (str(summary)[:2000], int(chat_id), int(message_id)),
+                )
+                self.connection.commit()
+            except sqlite3.OperationalError:
+                logger.warning(
+                    "update_media_summary: failed for chat %s message %s",
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
 
     def update_failed_operation(
         self, chat_id: int, message_id: int, failed_operation: str | None
@@ -271,20 +279,21 @@ class SQLiteRepository:
         """Store or clear the failed operation for a message to allow contextual retry."""
         if not isinstance(message_id, (int, float)) or not isinstance(chat_id, (int, float)):
             return
-        try:
-            val = str(failed_operation)[:2000] if failed_operation is not None else None
-            self.connection.execute(
-                "UPDATE conversation_context SET failed_operation = ? WHERE chat_id = ? AND message_id = ?",
-                (val, int(chat_id), int(message_id)),
-            )
-            self.connection.commit()
-        except sqlite3.OperationalError:
-            logger.warning(
-                "update_failed_operation: failed for chat %s message %s",
-                chat_id,
-                message_id,
-                exc_info=True,
-            )
+        with self._lock:
+            try:
+                val = str(failed_operation)[:2000] if failed_operation is not None else None
+                self.connection.execute(
+                    "UPDATE conversation_context SET failed_operation = ? WHERE chat_id = ? AND message_id = ?",
+                    (val, int(chat_id), int(message_id)),
+                )
+                self.connection.commit()
+            except sqlite3.OperationalError:
+                logger.warning(
+                    "update_failed_operation: failed for chat %s message %s",
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
 
     def get_reply_chain(
         self, chat_id: int, message_id: int, max_depth: int = 10
@@ -367,24 +376,26 @@ class SQLiteRepository:
 
     def cleanup_old_messages(self, retention_days: int = 14) -> int:
         """Purge messages older than retention_days to maintain storage health."""
-        try:
-            cursor = self.connection.execute(
-                "DELETE FROM conversation_context WHERE datetime(created_at) < datetime('now', ?)",
-                (f"-{retention_days} days",),
-            )
-            deleted = cursor.rowcount
-            self.connection.commit()
-            return deleted
-        except sqlite3.OperationalError:
-            logger.warning("cleanup_old_messages: OperationalError during cleanup", exc_info=True)
-            return 0
+        with self._lock:
+            try:
+                cursor = self.connection.execute(
+                    "DELETE FROM conversation_context WHERE datetime(created_at) < datetime('now', ?)",
+                    (f"-{retention_days} days",),
+                )
+                deleted = cursor.rowcount
+                self.connection.commit()
+                return deleted
+            except sqlite3.OperationalError:
+                logger.warning("cleanup_old_messages: OperationalError during cleanup", exc_info=True)
+                return 0
 
     def add_feedback(self, chat_id: int, user_id: int, rating: int, comment: str) -> None:
-        self.connection.execute(
-            "INSERT INTO feedback (chat_id, user_id, rating, comment) VALUES (?, ?, ?, ?)",
-            (chat_id, user_id, rating, comment[:2000]),
-        )
-        self.connection.commit()
+        with self._lock:
+            self.connection.execute(
+                "INSERT INTO feedback (chat_id, user_id, rating, comment) VALUES (?, ?, ?, ?)",
+                (chat_id, user_id, rating, comment[:2000]),
+            )
+            self.connection.commit()
 
     @staticmethod
     def _row_to_message(row: sqlite3.Row) -> ConversationMessage:
@@ -405,6 +416,7 @@ class SQLiteRepository:
             conversation_id=row["conversation_id"] if "conversation_id" in keys else None,
             failed_operation=row["failed_operation"] if "failed_operation" in keys else None,
             created_at=row["created_at"] if "created_at" in keys else None,
+            chat_id=int(row["chat_id"]) if "chat_id" in keys and row["chat_id"] is not None else None,
         )
 
 
@@ -524,6 +536,13 @@ class PostgresRepository:
 
     def add_context(self, chat_id: int, message: ConversationMessage) -> None:
         """Persist or upsert a conversation message safely under concurrent webhook load."""
+        if message.chat_id is not None and isinstance(chat_id, (int, float)) and int(message.chat_id) != int(chat_id):
+            logger.error(
+                "Refusing cross-chat Postgres write: target chat_id=%s, message.chat_id=%s",
+                chat_id,
+                message.chat_id,
+            )
+            return
         try:
             c_id = int(chat_id) if isinstance(chat_id, (int, float)) else 0
             m_id = int(message.message_id) if isinstance(message.message_id, (int, float)) else None
@@ -738,6 +757,7 @@ class PostgresRepository:
             conversation_id=row.get("conversation_id"),
             failed_operation=row.get("failed_operation"),
             created_at=str(created) if created is not None else None,
+            chat_id=int(row["chat_id"]) if row.get("chat_id") is not None else None,
         )
 
 

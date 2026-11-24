@@ -81,12 +81,37 @@ def find_image_in_conversation(
     return None, None, None
 
 
-def summarize_trimmed_messages(trimmed: Sequence[ConversationMessage], max_chars: int = 600) -> ConversationMessage | None:
+def filter_messages_for_chat(
+    messages: Sequence[ConversationMessage],
+    chat_id: int,
+) -> list[ConversationMessage]:
+    """Strictly verify that every message and summary belongs to chat_id; drop any cross-chat item."""
+    verified: list[ConversationMessage] = []
+    for msg in messages:
+        if msg.chat_id is not None and int(msg.chat_id) != int(chat_id):
+            logger.warning(
+                "Rejected cross-chat context message: expected chat_id=%s, got chat_id=%s (author=%s)",
+                chat_id,
+                msg.chat_id,
+                msg.author,
+            )
+            continue
+        verified.append(msg)
+    return verified
+
+
+def summarize_trimmed_messages(
+    trimmed: Sequence[ConversationMessage],
+    max_chars: int = 600,
+    *,
+    chat_id: int | None = None,
+) -> ConversationMessage | None:
     """Compact older trimmed messages into a concise summary entry so long discussions retain key context."""
     if not trimmed:
         return None
+    scoped = filter_messages_for_chat(trimmed, chat_id) if chat_id is not None else list(trimmed)
     snippets: list[str] = []
-    for msg in trimmed:
+    for msg in scoped:
         speaker = "Assistant" if (msg.is_bot or msg.author == "TelegramAI") else (msg.author or "User")
         text = " ".join((msg.text or "").split())
         if len(text) > 100:
@@ -112,6 +137,7 @@ def summarize_trimmed_messages(trimmed: Sequence[ConversationMessage], max_chars
         text=f"[Earlier conversation summary: {joined}]",
         is_bot=False,
         media_type="summary",
+        chat_id=chat_id,
     )
 
 
@@ -143,7 +169,7 @@ def assemble_context(
         if current_message.reply_to_message_id is not None:
             parent = repository.get_message(chat_id, current_message.reply_to_message_id)
             if parent:
-                return [parent]
+                return filter_messages_for_chat([parent], chat_id)
         return []
 
     context: list[ConversationMessage] = []
@@ -200,11 +226,11 @@ def assemble_context(
         total_tokens -= estimate_message_tokens(removed)
 
     if trimmed:
-        summary_msg = summarize_trimmed_messages(trimmed)
+        summary_msg = summarize_trimmed_messages(trimmed, chat_id=chat_id)
         if summary_msg and (total_tokens + estimate_message_tokens(summary_msg) <= max_tokens):
             context.insert(0, summary_msg)
 
-    return context
+    return filter_messages_for_chat(context, chat_id)
 
 
 def format_message_content(msg: ConversationMessage) -> str:

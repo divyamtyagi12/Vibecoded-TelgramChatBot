@@ -44,6 +44,7 @@ class ConversationMessage:
     conversation_id: str | None = None
     failed_operation: str | None = None
     created_at: str | None = None
+    chat_id: int | None = None
 
 
 _RATING_PATTERNS = re.compile(
